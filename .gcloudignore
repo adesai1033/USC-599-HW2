@@ -3,7 +3,14 @@
 .git/
 .env
 .env.*
+!.env.example
 .venv/
 __pycache__/
+*.py[cod]
+.pytest_cache/
 data/
+tests/
+eval/
+ingest/
+Assignment_2_Description.pdf
 .DS_Store

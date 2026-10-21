@@ -21,6 +21,7 @@ __pycache__/
 build/
 dist/
 .python-version
+.pytest_cache/
 
 # Virtual environments
 .venv/
@@ -33,8 +34,8 @@ chroma_index/
 chroma_db/
 *.sqlite3
 *.chroma
-# The prebuilt index/ (Chroma + papers.sqlite) is committed
-!index/**
+# Prebuilt index/ (Chroma + papers.sqlite) is baked into the image, never committed
+index/
 
 # Ingestion intermediates (raw PDFs, parsed JSON)
 data/

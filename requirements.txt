@@ -1,1 +1,6 @@
 # Runtime dependencies, pinned with ==
+fastapi==0.159.1
+uvicorn==0.54.0
+langchain-core==1.6.13
+langchain-google-genai==4.4.2
+python-dotenv==1.2.4

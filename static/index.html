@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3D Vision Paper Assistant</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1>3D Vision Paper Assistant</h1>
+    <p class="subtitle">Ask about NeRF, Gaussian Splatting, multi-view stereo and 3D reconstruction.</p>
+  </header>
+
+  <main id="messages" class="messages" aria-live="polite"></main>
+
+  <form id="composer" class="composer">
+    <label for="input" class="visually-hidden">Your question</label>
+    <textarea id="input" rows="2" placeholder="How does 3D Gaussian Splatting render a novel view?" required></textarea>
+    <button id="send" type="submit">Send</button>
+  </form>
+  <p class="hint">Enter to send · Shift+Enter for a new line</p>
+
+  <script src="app.js"></script>
+</body>
+</html>
