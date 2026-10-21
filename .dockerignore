@@ -1,0 +1,11 @@
+.git/
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+data/
+tests/
+eval/
+ingest/
+.DS_Store

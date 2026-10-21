@@ -1,0 +1,27 @@
+{
+  "corpus": {
+    "transport": "stdio",
+    "command": "python",
+    "args": [
+      "mcp_servers/corpus.py"
+    ],
+    "description": "Semantic search over the 3D computer vision arXiv paper corpus."
+  },
+  "papers_db": {
+    "transport": "stdio",
+    "command": "python",
+    "args": [
+      "mcp_servers/papers_db.py"
+    ],
+    "description": "Structured queries over paper metadata and benchmark results."
+  },
+  "tavily": {
+    "transport": "streamable_http",
+    "url": "https://mcp.tavily.com/mcp/?tavilyApiKey=${TAVILY_API_KEY}",
+    "tools": [
+      "tavily_search",
+      "tavily_extract"
+    ],
+    "description": "Live web search for current information."
+  }
+}

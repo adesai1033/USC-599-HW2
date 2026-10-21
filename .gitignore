@@ -33,6 +33,11 @@ chroma_index/
 chroma_db/
 *.sqlite3
 *.chroma
+# The prebuilt index/ (Chroma + papers.sqlite) is committed
+!index/**
+
+# Ingestion intermediates (raw PDFs, parsed JSON)
+data/
 
 # Durable state / local checkpoints
 *.db

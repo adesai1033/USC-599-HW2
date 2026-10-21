@@ -1,0 +1,9 @@
+# Explicit so gcloud does not fall back to .gitignore. index/ must be uploaded.
+.gcloudignore
+.git/
+.env
+.env.*
+.venv/
+__pycache__/
+data/
+.DS_Store

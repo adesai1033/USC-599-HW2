@@ -1,0 +1,1 @@
+# Synthesize node prompt
