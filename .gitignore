@@ -1,0 +1,62 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Environment / secrets (never commit .env — ship .env.example instead)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+service-account*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.python-version
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Vector store / RAG index artifacts
+chroma_index/
+chroma_db/
+*.sqlite3
+*.chroma
+
+# Durable state / local checkpoints
+*.db
+checkpoints/
+
+# Testing / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# Logs and temp files
+*.log
+tmp/
+
+# Node (only if frontend tooling ever gets added — assignment forbids node_modules in the image)
+node_modules/
+
+# GCP / deploy artifacts
+.gcloudignore-generated
+*.tar.gz
