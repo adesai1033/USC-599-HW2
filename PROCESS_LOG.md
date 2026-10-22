@@ -291,6 +291,16 @@ chunks with their paper title (1, a paid re-embed).
   - An unhandled Gemini 504 in a worker crashes the turn (Phase 4c failure wrapper, Phase 5
     fallback).
 
+**Status after Phase 4c (`abdea34`):**
+- **Fixed:** a worker failure (including a provider 504) is now an `AgentError` and the turn
+  completes. Phase 5's fallback provider will add a retry on another provider.
+- **Still open:**
+  - research time;
+  - claims with no citation aren't validated (the broken-Tavily answer invented a corpus date
+    range);
+  - the citation prior's popularity bias;
+  - one extra research dispatch on the turn a server reconnects.
+
 ### 2026-10-22 — Phase 4b: worker factory and the `research` worker
 
 **Built:**
