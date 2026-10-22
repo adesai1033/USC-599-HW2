@@ -14,6 +14,50 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Phase 4a: orchestration skeleton (no real workers)
+
+**Dependency (approved):** `langgraph==1.2.16`, the latest release; it needs `langchain-core>=1.4.7,<2`.
+I read its installed source:
+- **`langgraph.config.get_stream_writer()`** reads the writer from the runnable config's runtime.
+  It is a no-op in a run that doesn't stream `custom`, and raises `RuntimeError` outside any
+  runnable context.
+- **Stream modes** are `values`, `updates`, `checkpoints`, `tasks`, `debug`, `messages` and
+  `custom`.
+- **`with_structured_output`** in `langchain-google-genai` 4.4.2 defaults to `json_schema`.
+
+**Built:**
+- **`graph/state.py`:** the Pydantic models, plus `OrchestratorState` with a new `dispatches`
+  list, mirrored in AGENTS.md.
+- **`graph/trace.py`:** `emit_trace()`.
+- **`graph/supervisor.py`:** decides through structured output, then applies the guards in order
+  (`supervisor_parse_error`, `step_limit`, `worker_unavailable`, `repeated_dispatch`).
+- **`graph/synthesize.py`:** streams the answer with `tags=["synthesize"]`.
+- **`graph/build.py`:** `build_graph()` with injectable workers and models, and `DEFAULT_CONFIG`
+  with `recursion_limit = 2 × MAX_SUPERVISOR_STEPS + 4`.
+- **`scripts/cli.py`**, **`prompts/supervisor.md`** and **`prompts/synthesize.md`**.
+- **`config.max_supervisor_steps()`**.
+- **`agents/registry.py`:** `AgentSpec` gains `name` and `description`, and there is a new, empty
+  `WORKERS` plus `available_workers()`. `AGENTS` keeps all three allowlists, because
+  `mcp_client.py` filters tools with them.
+
+**Design choices:**
+- **Supervisor roster:** the supervisor sees every agent in `AGENTS`, with the ones that aren't
+  wired in marked unavailable. It routes by what the question needs, so the
+  `worker_unavailable` guard records the missing capability and the answer says so instead of
+  guessing.
+- **`emit_trace` signature:** it takes a `step` keyword, because the trace payload includes the
+  supervisor step.
+- **CLI stream modes:** the CLI also streams `values`, to get the final state for its summary
+  line.
+
+**Verified:**
+- `pytest tests/`: 66 passed, 2 live tests skipped. That includes 11 new skeleton tests.
+- Real Gemini runs:
+  - "What's a point cloud?" goes supervisor → synthesize and streams an answer.
+  - The 3DGS question goes to research, hits `worker_unavailable`, and the answer says the
+    capability isn't available, with no citations.
+  - The REPL ran three questions in a row; the PSNR question was routed to `data`.
+
 ### 2026-10-22 — Stress test of Phases 1–3, and fixes
 
 **How:** throwaway scripts (not committed) ran the real app under uvicorn with a fake model. They

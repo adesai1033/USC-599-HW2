@@ -26,6 +26,14 @@ class Settings:
         )
 
 
+def max_supervisor_steps() -> int:
+    """MAX_SUPERVISOR_STEPS (default 6): supervisor decisions per turn before it must synthesize."""
+    steps = int(os.environ.get("MAX_SUPERVISOR_STEPS", "6"))
+    if steps < 1:
+        raise RuntimeError(f"MAX_SUPERVISOR_STEPS must be at least 1, got {steps}.")
+    return steps
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Read settings from the environment; raise if a required variable is missing."""

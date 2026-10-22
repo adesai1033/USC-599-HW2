@@ -93,6 +93,7 @@ config.py            settings from env (model IDs, RAG_TOP_K, step limits, backe
 graph/
   state.py           OrchestratorState + Finding / Citation / RoutingDecision / AgentError models
   supervisor.py      supervisor node (structured output → SupervisorDecision)
+  trace.py           emit_trace(): trace events through LangGraph's custom stream writer
   workers.py         worker subgraph factory: agent ⇄ ToolNode loop, failure capture wrapper
   synthesize.py      final answer node: streams tokens, validates citations
   build.py           assembles the StateGraph, conditional edges, recursion limit
@@ -123,6 +124,8 @@ ingest/              offline pipeline — never runs in the container
   extract_results.py LLM extraction of benchmark results → results table (verified=0)
 data/                gitignored: raw PDFs, intermediate JSON. Excluded from the image
 index/               gitignored but NOT gcloudignored: chroma/ and papers.sqlite, baked into the image
+scripts/
+  cli.py             run the graph from the terminal: one-shot or REPL, live trace + streamed answer
 eval/
   questions.jsonl    fixed RAGAS test set (question, ground_truth, reference arxiv_ids)
   run_ragas.py       RAGAS metrics → docs/evaluation.md
@@ -187,6 +190,7 @@ class OrchestratorState(TypedDict):
     retrieved_chunk_ids: Annotated[list[str], operator.add]
     routing: Annotated[list[RoutingDecision], operator.add]
     errors: Annotated[list[AgentError], operator.add]
+    dispatches: Annotated[list[Dispatch], operator.add]  # worker + instruction, in order
 ```
 
 ## LLM routing
