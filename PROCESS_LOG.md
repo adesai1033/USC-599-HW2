@@ -14,6 +14,39 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-21 — `ingest/parse_pdfs.py`; PDF download started
+
+**Built:** `parse_pdfs.py` (PyMuPDF, `pymupdf==2.0`, approved). For each PDF it writes
+`data/parsed/<id>.json`.
+- **Reading order:** for two-column pages, full-width blocks split the page into bands, and
+  each band is read left column then right column.
+- **Headings:** detected line by line, so a heading inside a paragraph block is still found.
+  Numbered, known-name and ALL-CAPS headings count when they're bold (including LaTeX `CMBX`
+  fonts) or larger than the body text. A bare "1" line is merged with the heading on the next
+  line. Subsections fold into their top-level section.
+- **Captions:** kept as a separate list (`Figure N` / `Fig.` / `Table N`).
+- **Removed:**
+  - equation and table fragments (short blocks, or mostly non-letters)
+  - running headers and footers (short text that repeats on 3 or more pages, plus margin
+    text, arXiv stamps and page numbers)
+  - the front matter, the PDF's abstract, references and acknowledgments
+- **Fallbacks:** an introduction with no heading is recovered by comparing against the arXiv
+  abstract. If no headings are found at all, everything goes into a single `body` section.
+
+**Debugging:** the first version lost most of the text in Instant-NGP and NeRF and dropped
+the Mip-NeRF 360 introduction. The causes were headings merged into paragraph blocks, ALL-CAPS
+headings split across two lines, LaTeX bold fonts not setting the bold flag, and an
+introduction with no heading. After the fixes, all four test papers have sensible sections:
+NeRF 11, Mip-NeRF 360 13, Instant-NGP 12, 3DGS 11. I sampled the dropped fragments and they're
+flattened results tables and math, not prose.
+
+**Known limitation:** rejoining words hyphenated across a line break also merges real
+compounds ("coordinate-based" becomes "coordinatebased").
+
+**Download:** the size cap in `corpus_spec.yaml` went from 40 to 80 MB after 7 papers were
+skipped for being 40–60 MB, including the Plenoxels and Nerfstudio seeds. A second download
+pass will fetch them.
+
 ### 2026-10-21 — Hand-curated corpus exclusions
 
 **Done:** after reviewing the borderline papers, I added four IDs to `exclude.arxiv_ids`

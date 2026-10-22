@@ -187,4 +187,4 @@ exclude:
 
 pdf:
   # Skip papers whose PDF is missing or larger than this, rather than parsing partial text.
-  max_size_mb: 40
+  max_size_mb: 80
