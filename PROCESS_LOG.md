@@ -14,6 +14,37 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-21 — Chunk spot-check, chunker fix, `eval/questions.jsonl`
+
+**Spot-check:** read 20 random chunks (seed 599).
+- **Looked good:** reading order was correct in all 20, with no two-column interleaving, and
+  the section labels were right.
+- **Minor, left as is:**
+  - Removing display equations leaves sentences like "minimizing the following loss:"
+    dangling.
+  - About 6% of body chunks still have short runs of inline math.
+  - Dehyphenation joins real compounds ("lowresources").
+  - Sub-figure captions repeat.
+  - One TSGS caption swallowed a body paragraph. The longest caption in the corpus is 1,333
+    characters, so this is rare.
+
+**Fixed in `chunk.py`:**
+- Bracketed references such as "(Tab. 3)" or "(Fig. 2)" were split as sentence ends, because
+  the abbreviation check saw "(tab". That affected 652 places.
+- Caption chunks put a paragraph break between every sentence.
+
+After re-chunking: 4,867 chunks and 0 split references. The index still needs a re-embed of
+950 changed chunks, about $0.005, waiting on approval.
+
+**`eval/questions.jsonl`:** 29 questions (18 lookup, 5 compare, 2 lit review, 3 metadata,
+1 not in corpus) covering 26 papers.
+- Every reference answer was written from sentences pulled out of the chunks, not from memory.
+- Three claims I'd written from memory were checked against the text. One wasn't supported
+  (NeuS "occlusion-aware") and was replaced.
+- Metadata answers come from `papers.sqlite`.
+- No benchmark-ranking questions yet, because the `results` table is empty until
+  `extract_results.py` runs.
+
 ### 2026-10-21 — `ingest/build_db.py`
 
 **Built:** `build_db.py` rebuilds `index/papers.sqlite` from `data/selected.json` using the

@@ -61,7 +61,8 @@ def split_sentences(text: str) -> list[str]:
     """Split on sentence ends, re-joining splits that follow a known abbreviation ("et al.", "Fig.")."""
     sentences: list[str] = []
     for piece in SENTENCE_END.split(text):
-        last_word = sentences[-1].rsplit(" ", 1)[-1].rstrip(".").lower() if sentences else ""
+        # lstrip so a bracketed reference like "(Tab. 3)" still matches the abbreviation.
+        last_word = sentences[-1].rsplit(" ", 1)[-1].lstrip("([").rstrip(".").lower() if sentences else ""
         if sentences and (last_word in ABBREVIATIONS or len(last_word) == 1):
             sentences[-1] = f"{sentences[-1]} {piece}"
         else:
@@ -170,8 +171,6 @@ def chunk_paper(parsed: dict, meta: dict) -> list[dict]:
             chunks.append(make(section["section"], piece["text"], piece["page"]))
 
     caption_units = units_for(parsed["captions"], CAPTION_CHUNK_TOKENS)
-    for unit in caption_units:
-        unit["para_start"] = True
     for piece in pack(caption_units, CAPTION_CHUNK_TOKENS, 0):
         chunks.append(make("captions", piece["text"], piece["page"]))
     return chunks
