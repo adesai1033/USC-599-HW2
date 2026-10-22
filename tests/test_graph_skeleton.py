@@ -162,6 +162,8 @@ async def test_every_node_that_ran_has_enter_and_exit_traces():
     exits = [t["node"] for t in traces if t["kind"] == "exit"]
     assert enters == exits == ["supervisor", "research", "supervisor", "synthesize"]
     assert all(t["ms"] is not None for t in traces if t["kind"] == "exit")
+    synth_exit = next(t for t in traces if t["node"] == "synthesize" and t["kind"] == "exit")
+    assert synth_exit["detail"].startswith("first token ") and f"{len(ANSWER.split())} words" in synth_exit["detail"]
     assert [t["detail"] for t in traces if t["kind"] == "decision"] == ["research (lookup): go research",
                                                                         "synthesize (general): go synthesize"]
 

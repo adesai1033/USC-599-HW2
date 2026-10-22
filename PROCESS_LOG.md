@@ -14,6 +14,48 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Faster comparison answers (synthesize length and thinking)
+
+**Instrumented first:** synthesize's `exit` trace now reports time to first token, word count and
+reasoning tokens. Gemini's stream reports 0 reasoning tokens even when it clearly thinks, so that
+count isn't reliable.
+
+**What the measurements showed** ("Compare how NeRF and Instant-NGP represent a scene", 3–4 runs
+each):
+
+| Setup | Synthesize | First token | Words | Research | Total |
+|---|---|---|---|---|---|
+| baseline | 11.6–14.9 s | 1.3–3.7 s | 533–608 | 16.6–24.0 s | 34–44 s |
+| + length targets | 10.4–20.8 s | 2.9–12.9 s | 378–428 | 19.4–23.6 s | 36–47 s |
+| + low thinking | 8.5–13.0 s (median ~9 s) | 1.3–1.8 s | 333–482 | 21.3–28.6 s | 35.5–53 s |
+
+- **My plan's hypothesis was wrong.** At baseline, synthesize was mostly writing, not thinking.
+- **Length targets** cut the words by about 30%, but the model then thought longer before its
+  first token (up to 12.9 s).
+- **Low thinking** on top fixed that.
+
+**Changes:**
+- `prompts/synthesize.md` has per-task-type length targets: compare = one table plus at most
+  three short paragraphs, about 300–450 words.
+- Synthesize uses `thinking_level="low"`.
+- `prompts/research.md`: for comparisons, make one search filtered to all the papers' IDs, and
+  never re-search a detail a result already covers.
+
+**Quality** across the 7 runs with the final settings (4 compare, 3DGS, "this month", point
+cloud):
+- every comparison cited both papers;
+- every cited chunk ID was in that turn's retrieved list;
+- no citations were grouped;
+- no long paragraph lacked a citation;
+- the 3DGS answer cites only `2308.04079`, and the point-cloud answer made no tool calls.
+
+**Still open:**
+- Research is now most of a research turn's time (20–29 s, varying with the number of rounds).
+- One run hit a Gemini `504 DEADLINE_EXCEEDED` in the worker, and the whole turn crashed. This is
+  the known gap that the Phase 4c worker failure wrapper and the Phase 5 fallback cover.
+
+**Verified:** `pytest tests/` gives 86 passed, 2 skipped.
+
 ### 2026-10-22 — Fixed issues 1–3, arXiv mirrors and the `time_range` gap
 
 **arXiv mirrors:** pages on alphaxiv, Hugging Face Papers, Semantic Scholar, Emergent Mind,

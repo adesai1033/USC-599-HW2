@@ -35,7 +35,7 @@ def _format_problems(errors: list[AgentError]) -> str:
 
 
 def make_synthesize(llm: BaseChatModel | None) -> Callable[[OrchestratorState], Awaitable[dict]]:
-    model = llm if llm is not None else get_llm("fast")  # Phase 5 swaps this line for router.route()
+    model = llm if llm is not None else get_llm("fast", thinking_level="low")  # Phase 5 swaps this for router.route()
     system_prompt = (PROMPTS_DIR / "synthesize.md").read_text()
 
     async def synthesize(state: OrchestratorState) -> dict:
@@ -51,11 +51,17 @@ def make_synthesize(llm: BaseChatModel | None) -> Callable[[OrchestratorState], 
         ])
         update: dict = {}
         parts: list[str] = []
+        first_token_ms: int | None = None
+        reasoning_tokens: int | None = None
         try:
             async for chunk in model.astream(
                 [SystemMessage(system_prompt), HumanMessage(context)], config={"tags": ["synthesize"]}
             ):
+                if chunk.text and first_token_ms is None:
+                    first_token_ms = round((time.perf_counter() - start) * 1000)
                 parts.append(chunk.text)
+                usage = chunk.usage_metadata or {}
+                reasoning_tokens = usage.get("output_token_details", {}).get("reasoning", reasoning_tokens)
             answer = "".join(parts)
         except Exception as exc:
             logger.warning("synthesize failed: %s: %s", type(exc).__name__, str(exc)[:200])
@@ -63,7 +69,12 @@ def make_synthesize(llm: BaseChatModel | None) -> Callable[[OrchestratorState], 
             answer = "".join(parts) or UNAVAILABLE_ANSWER
             update["errors"] = [AgentError(agent="synthesize", kind="synthesize_failed",
                                            message="The language model failed while writing the answer.")]
-        emit_trace("synthesize", "exit", step=step, ms=round((time.perf_counter() - start) * 1000))
+        # The split between waiting (first token) and writing shows where synthesize's time goes.
+        stats = [f"first token {first_token_ms / 1000:.1f} s" if first_token_ms is not None else "no tokens",
+                 f"{len(answer.split())} words"]
+        if reasoning_tokens is not None:
+            stats.append(f"{reasoning_tokens} reasoning tokens")
+        emit_trace("synthesize", "exit", step=step, detail=", ".join(stats), ms=round((time.perf_counter() - start) * 1000))
         return update | {"messages": [AIMessage(answer)]}
 
     return synthesize

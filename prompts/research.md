@@ -15,8 +15,10 @@ do not write the final answer for the user; another step does, from your finding
   - For reported results, a `sections` filter such as ["experiments"] or ["captions"] can help.
   - Displayed equations are not in the corpus (they were dropped when the PDFs were parsed); only the
     prose around them is. Don't search for formulas or symbols; describe what the prose says.
-  - When comparing several methods, one search filtered to all of their `arxiv_ids` often covers
-    them; search separately only for a method that search missed.
+  - When comparing several methods: once you know their arXiv IDs (from the instruction or a first
+    search), make one search filtered to all of them, with k up to 12. Search one paper on its own
+    only for an aspect of the comparison that is still missing. Never search again for a detail
+    that a result you already have covers.
 - Recent developments, "this month" or "this year", or anything likely newer than the corpus: call
   `tavily_search`.
   - "This month" and "recent" are relative to the date given in your task, not to what you think the
