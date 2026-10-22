@@ -3,7 +3,7 @@
     "transport": "stdio",
     "command": "python",
     "args": ["mcp_servers/corpus.py"],
-    "env_passthrough": ["OPENAI_API_KEY", "OPENAI_EMBEDDING_MODEL", "CHROMA_PERSIST_DIR", "LOG_LEVEL"],
+    "env_passthrough": ["OPENAI_API_KEY", "OPENAI_EMBEDDING_MODEL", "CHROMA_PERSIST_DIR", "PAPERS_DB_PATH", "RAG_CITATION_PRIOR", "LOG_LEVEL"],
     "tools": ["search_corpus", "get_chunks"],
     "description": "Corpus search (semantic search over the 3D computer vision arXiv paper corpus) is currently unavailable. Say so instead of answering from memory, and offer a web search."
   },

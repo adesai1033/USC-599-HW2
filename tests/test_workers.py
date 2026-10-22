@@ -16,8 +16,8 @@ from pydantic import Field
 import mcp_client
 from agents.registry import AGENTS, WORKERS
 from graph.build import build_graph
-from graph.workers import SUMMARIZE_NOW, make_worker
-from rag.citations import parse_citation_ids
+from graph.workers import FIX_ATTRIBUTION, SUMMARIZE_NOW, make_worker
+from rag.citations import attribution_mismatches, parse_citation_ids
 from tests.test_graph_skeleton import ScriptedSupervisor, answer_llm, decision, run
 
 RESEARCH = WORKERS["research"]
@@ -217,10 +217,14 @@ def test_tavily_error_payload_is_passed_to_the_model_not_called_malformed():
 
 def test_every_arxiv_page_of_a_paper_gets_one_source_id():
     pages = ["https://arxiv.org/abs/2610.04351", "https://arxiv.org/html/2610.04351v1", "http://www.arxiv.org/pdf/2610.04351v2.pdf",
-             "https://export.arxiv.org/abs/2610.04351v3/", "https://ar5iv.labs.arxiv.org/html/2610.04351v1"]
+             "https://export.arxiv.org/abs/2610.04351v3/", "https://ar5iv.labs.arxiv.org/html/2610.04351v1",
+             "https://www.alphaxiv.org/abs/2610.04351", "https://www.alphaxiv.org/overview/2610.04351v2",
+             "https://huggingface.co/papers/2610.04351", "https://www.semanticscholar.org/arxiv/2610.04351",
+             "https://www.emergentmind.com/papers/2610.04351"]
     assert {mcp_client.normalize_url(u) for u in pages} == {"https://arxiv.org/abs/2610.04351"}
     assert mcp_client.web_source_id("https://arxiv.org/abs/2610.04352") != mcp_client.web_source_id(pages[0])
     assert mcp_client.normalize_url("https://arxiv.org/list/cs.CV/recent") == "https://arxiv.org/list/cs.CV/recent"
+    assert mcp_client.normalize_url("https://huggingface.co/papers") == "https://huggingface.co/papers"  # not a paper page
     out = json.loads(mcp_client.normalize_tavily("tavily_search", json.dumps({"results": [
         {"url": pages[0], "title": "LoCoSplat", "content": "abs"},
         {"url": pages[1], "title": "LoCoSplat (html)", "content": "html"},
@@ -269,3 +273,40 @@ async def test_graph_runs_research_with_tool_traces_tagged_research():
     assert tool_events[1]["ms"] is not None
     assert final["retrieved_chunk_ids"] == [c["chunk_id"] for c in CHUNKS]
     assert [c.id for c in final["findings"][0].citations] == ["2308.04079#method-03"]
+
+
+# ---------------------------------------------------------------- attribution check
+
+def test_attribution_mismatch_flags_a_claim_citing_another_papers_source():
+    sources = {"web:772d7f0a": "https://mdpi.com/x Comparative assessment of NeRF and 3DGS on UAV imagery",
+               "web:14bf7c55": "https://arxiv.org/abs/2503.16964 DroneSplat",
+               "2308.04079#method-03": "2308.04079 3D Gaussian Splatting"}
+    wrong = "- **DroneSplat** (arXiv:2503.16964): drone reconstruction [web:772d7f0a]."
+    assert attribution_mismatches(wrong, sources) == [(wrong, ["web:772d7f0a"], ["2503.16964"])]
+    assert attribution_mismatches(wrong.replace("772d7f0a", "14bf7c55"), sources) == []
+    # Comparisons that also name the cited paper, claims naming no paper, and unknown IDs are not flagged.
+    assert attribution_mismatches("Unlike NeRF (2003.08934), 3DGS (2308.04079) rasterizes [2308.04079#method-03].", sources) == []
+    assert attribution_mismatches("Tiles are sorted [2308.04079#method-03].", sources) == []
+    assert attribution_mismatches("X (2503.16964) [web:deadbeef].", sources) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fixed", [True, False])
+async def test_worker_asks_once_to_fix_a_misattributed_claim(fixed):
+    wrong = f"**Web** NovelSplat (arXiv:2610.99999) is new [{WEB_ID}]."
+    repaired = "**Web** No paper matching the request was found." if fixed else wrong
+    model = ScriptedChatModel(script=[call("tavily_search", {"query": "new 3dgs"}), AIMessage(wrong), AIMessage(repaired)])
+    supervisor = ScriptedSupervisor([decision("research", "find new papers", "current_events"), decision("synthesize")])
+    graph = build_graph(workers={"research": make_worker(RESEARCH, [tavily_search], model)},
+                        supervisor_llm=supervisor, synthesize_llm=answer_llm())
+    final, traces = await run(graph)
+    assert len(model.seen) == 3 and "NovelSplat" in model.seen[2][-1].text  # the fix request names the claim
+    assert model.seen[2][-1].text.startswith(FIX_ATTRIBUTION.split(":")[0])
+    assert final["findings"][0].content == repaired
+    checks = [t["detail"] for t in traces if t["kind"] == "error" and t["agent"] == "research"]
+    assert checks[0].startswith("attribution check: 1 claim(s)")
+    if fixed:
+        assert len(checks) == 1 and final.get("errors", []) == []
+    else:
+        assert "still mismatched" in checks[1]
+        assert [e.kind for e in final["errors"]] == ["attribution_mismatch"]

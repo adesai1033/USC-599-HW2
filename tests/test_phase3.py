@@ -421,3 +421,36 @@ async def test_tavily_key_never_appears_in_log_output(monkeypatch):
     assert tools.status["tavily"].state == "down"
     assert "tavilyApiKey=<redacted>" in output
     assert SECRET not in output and SECRET not in (tools.status["tavily"].error or "")
+
+
+# ---------------------------------------------------------------- retriever: citation prior
+
+class FakeStore:
+    """Returns fixed (document, cosine distance) hits, as Chroma's similarity search does."""
+
+    def __init__(self, hits):
+        self.hits = hits
+        self.asked_k = None
+
+    async def asimilarity_search_with_score(self, query, k, filter=None):
+        self.asked_k = k
+        return self.hits[:k]
+
+
+def hit(arxiv_id: str, similarity: float):
+    from langchain_core.documents import Document
+
+    meta = {"chunk_id": f"{arxiv_id}#method-00", "arxiv_id": arxiv_id, "title": "t", "section": "method", "page": 1,
+            "url": f"https://arxiv.org/abs/{arxiv_id}"}
+    return Document(page_content="x", metadata=meta), 1 - similarity
+
+
+@pytest.mark.asyncio
+async def test_citation_prior_lets_the_original_paper_outrank_close_follow_ups():
+    store = FakeStore([hit("2404.00001", 0.78), hit("2404.00002", 0.77), hit("2308.04079", 0.73)])
+    counts = {"2404.00001": 30, "2404.00002": 12, "2308.04079": 11000}
+    plain = await retriever.build_retriever(store, counts, 0.0).ainvoke(retriever.SearchRequest("q", k=2))
+    assert [r["arxiv_id"] for r in plain] == ["2404.00001", "2404.00002"] and store.asked_k == 2
+    boosted = await retriever.build_retriever(store, counts, 0.02).ainvoke(retriever.SearchRequest("q", k=2))
+    assert [r["arxiv_id"] for r in boosted] == ["2308.04079", "2404.00001"] and store.asked_k == 40
+    assert boosted[0]["score"] == 0.73  # the reported score stays the plain similarity

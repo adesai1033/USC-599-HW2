@@ -56,8 +56,9 @@ def build_graph(
     if workers is None:
         if mcp is None:
             raise ValueError("build_graph needs a started MCPTools (mcp=...) to build the registry's workers")
+        # Low thinking halved the research worker's time (27 s -> 13 s) and still found the same papers.
         workers = {
-            name: make_worker(WORKERS[name], mcp.tools_for(name), get_llm(WORKERS[name].default_tier),
+            name: make_worker(WORKERS[name], mcp.tools_for(name), get_llm(WORKERS[name].default_tier, thinking_level="low"),
                               unavailable_notes=mcp.unavailable_notes(name))
             for name in available_workers()
         }

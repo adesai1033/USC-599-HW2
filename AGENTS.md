@@ -221,8 +221,14 @@ On a provider error (timeout, 429, 5xx, auth failure) the call retries once on t
 - **Chunk ID**: `{arxiv_id}#{section_slug}-{nn}`, e.g. `2308.04079#method-03`. The ID is
   stable across re-ingestion of the same paper.
 - **Metadata per chunk**: `chunk_id, arxiv_id, title, year, section, page, url`.
+- **Embedding input**: each chunk is embedded as `<paper title>\n<section>\n\n<text>`, while
+  the stored document is the plain text (`ingest/embed.py`). A paper often never names itself
+  in its own text; the 3DGS paper never says "Gaussian Splatting".
 - **Retrieval**: `k = RAG_TOP_K` (default 6), optionally filtered by `arxiv_ids` or
-  `sections`.
+  `sections`. Candidates are re-ranked by cosine similarity +
+  `RAG_CITATION_PRIOR` × log10(1 + citations) (default 0.02; 0 turns it off), so the paper that
+  introduced a method can outrank follow-ups that restate it. The reported `score` stays the
+  plain cosine similarity.
 - **Augmentation**: `rag/format.py` renders each chunk as `[chunk_id] (title, §section,
   p.N)\n<text>`. The prompt template lives in `prompts/` and requires a `[chunk_id]` on
   every corpus-derived claim.

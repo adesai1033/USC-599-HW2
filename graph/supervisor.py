@@ -74,7 +74,8 @@ def make_supervisor(
     llm: BaseChatModel | None, worker_names: Collection[str]
 ) -> Callable[[OrchestratorState], Awaitable[dict]]:
     """Build the supervisor node. `worker_names` are the workers wired into the graph."""
-    model = llm if llm is not None else get_llm("fast")  # Phase 5 swaps this line for router.route()
+    # Routing is a short classification: low thinking measured 2.5 s median vs 3.2 s, same decisions.
+    model = llm if llm is not None else get_llm("fast", thinking_level="low")  # Phase 5 swaps this for router.route()
     decider = model.with_structured_output(SupervisorDecision).with_config(tags=["supervisor"])
     system_prompt = (PROMPTS_DIR / "supervisor.md").read_text().replace("{workers}", _roster(worker_names))
 

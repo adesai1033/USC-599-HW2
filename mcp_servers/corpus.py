@@ -4,12 +4,16 @@
 
 Needs OPENAI_API_KEY to embed queries. Reads OPENAI_EMBEDDING_MODEL and CHROMA_PERSIST_DIR.
 The index is loaded once at startup, before the server accepts requests.
+
+Results are re-ranked with a small citation-count prior (RAG_CITATION_PRIOR, default 0.02; 0 turns
+it off), read once from PAPERS_DB_PATH. Without the database the prior is skipped.
 """
 
 import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -18,6 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+DEFAULT_CITATION_PRIOR = 0.02  # measured on eval/questions.jsonl: top-6 hits 22 -> 25 of 27
 
 from langchain_chroma import Chroma  # noqa: E402
 from langchain_core.runnables import Runnable  # noqa: E402
@@ -46,6 +51,19 @@ class Corpus:
     sections: Counter
 
 
+def citation_counts() -> dict[str, int]:
+    """arXiv ID -> citation count from the paper database, opened read-only; empty if it isn't there."""
+    path = (ROOT / os.environ.get("PAPERS_DB_PATH", "index/papers.sqlite")).resolve()
+    if not path.exists():
+        logger.warning("no paper database at %s; searching without the citation prior", path)
+        return {}
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return {arxiv_id: count or 0 for arxiv_id, count in conn.execute("SELECT arxiv_id, citation_count FROM papers")}
+    finally:
+        conn.close()
+
+
 @lru_cache
 def corpus() -> Corpus:
     embeddings = OpenAIEmbeddings(
@@ -56,7 +74,8 @@ def corpus() -> Corpus:
     logger.info("corpus index loaded: %d chunks", len(metadatas))
     return Corpus(
         store=store,
-        retriever=build_retriever(store),
+        retriever=build_retriever(store, citation_counts(),
+                                  float(os.environ.get("RAG_CITATION_PRIOR", DEFAULT_CITATION_PRIOR))),
         arxiv_ids=frozenset(m["arxiv_id"] for m in metadatas),
         sections=Counter(m["section"] for m in metadatas),
     )
@@ -105,8 +124,9 @@ async def search_corpus(
     """Semantic search over the corpus of ~220 arXiv papers on 3D computer vision (NeRF, 3D Gaussian
     Splatting, neural surfaces, multi-view stereo, feed-forward reconstruction, dynamic scenes, neural SLAM).
 
-    Use this to find passages that answer a question. Returns up to k chunks, best first, each with
-    chunk_id, arxiv_id, title, section, page, url, score (higher is more relevant) and text. Cite
+    Use this to find passages that answer a question. Returns up to k chunks, best first (by relevance,
+    with a slight preference for widely cited papers), each with chunk_id, arxiv_id, title, section,
+    page, url, score (cosine similarity to the query; higher is closer) and text. Cite
     chunks by their chunk_id. An empty result means the corpus has nothing relevant.
 
     Args:

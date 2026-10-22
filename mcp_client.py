@@ -50,11 +50,15 @@ MAX_RESULT_CHARS = 100_000  # longer tool output is cut before it reaches a mode
 SECRET_ENV_VARS = ("TAVILY_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY")
 TAVILY_TOOLS = {"tavily_search", "tavily_extract"}
 TRACKING_PARAM = re.compile(r"^(utm_|fbclid$|gclid$)")
-# arxiv.org/abs/2610.04351, /html/2610.04351v1, /pdf/2610.04351v2.pdf, arXiv's own mirrors: one paper, one ID.
+# One paper, one ID: arxiv.org/abs/2610.04351, /html/2610.04351v1, /pdf/2610.04351v2.pdf, arXiv's own mirrors,
+# and third-party pages that are keyed by the arXiv ID (alphaxiv.org/overview/2610.04351, huggingface.co/papers/...).
 ARXIV_HOSTS = {"arxiv.org", "export.arxiv.org", "ar5iv.labs.arxiv.org", "ar5iv.org"}
+ARXIV_MIRROR_HOSTS = {"alphaxiv.org", "huggingface.co", "semanticscholar.org", "api.semanticscholar.org",
+                      "emergentmind.com", "papers.cool", "scholar.archive.org", "paperswithcode.com"}
 ARXIV_PAGE = re.compile(
     r"^/(?:abs|html|pdf)/(?P<id>\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?(?:\.pdf)?/?$"
 )
+ARXIV_MIRROR_PAGE = re.compile(r"^/(?:abs|pdf|overview|papers|arxiv|paper/arxiv)/(?P<id>\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?/?$")
 REQUEST_TIMEOUT_CODE = 408  # McpError code the MCP SDK uses for a request that timed out
 
 ENV_REF = re.compile(r"\$\{([A-Z0-9_]+)\}")
@@ -139,12 +143,15 @@ def normalize_url(url: str) -> str:
     """Canonical form of a URL for source IDs.
 
     http and https are the same, "www." is dropped, as are the fragment, tracking parameters and a
-    trailing slash. Every arXiv page of a paper (abs, html, pdf, any version) maps to its abs page.
+    trailing slash. Every arXiv page of a paper (abs, html, pdf, any version), and a third-party page
+    keyed by its arXiv ID, maps to the paper's arXiv abs page.
     """
     parts = urlsplit(url.strip())
     scheme = "https" if parts.scheme.lower() in ("http", "https") else parts.scheme.lower()
     host = parts.netloc.lower().removeprefix("www.")
     if host in ARXIV_HOSTS and (page := ARXIV_PAGE.match(parts.path)):
+        return f"https://arxiv.org/abs/{page['id']}"
+    if host in ARXIV_MIRROR_HOSTS and (page := ARXIV_MIRROR_PAGE.match(parts.path)):
         return f"https://arxiv.org/abs/{page['id']}"
     query = urlencode(sorted((k, v) for k, v in parse_qsl(parts.query) if not TRACKING_PARAM.match(k)))
     return urlunsplit((scheme, host, parts.path.rstrip("/"), query, ""))

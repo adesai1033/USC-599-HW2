@@ -6,8 +6,12 @@
 Reads data/chunks.jsonl and writes the persistent Chroma collection COLLECTION in
 CHROMA_PERSIST_DIR (default index/chroma/), using OPENAI_EMBEDDING_MODEL and cosine distance.
 
-The run is incremental. Each chunk's metadata stores a hash of its text, so a re-run embeds
-only new or changed chunks, and deletes chunks that are no longer in chunks.jsonl. Batches are
+Each chunk is embedded with its paper title and section in front of its text (see embed_input), and
+stored with the plain text as its document. The title matters: a paper often never names itself in
+its own text (the 3DGS paper never says "Gaussian Splatting"), while dozens of follow-ups do.
+
+The run is incremental. Each chunk's metadata stores a hash of its embedding input, so a re-run
+embeds only new or changed chunks, and deletes chunks that are no longer in chunks.jsonl. Batches are
 written as they finish, so an interrupted run keeps its progress.
 """
 
@@ -37,6 +41,11 @@ logger = logging.getLogger("embed")
 
 def text_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def embed_input(chunk: dict) -> str:
+    """The text that is embedded: "<paper title>\n<section>\n\n<chunk text>"."""
+    return f"{chunk['title']}\n{chunk['section'].replace('-', ' ').capitalize()}\n\n{chunk['text']}"
 
 
 def load_chunks() -> list[dict]:
@@ -71,7 +80,7 @@ def main() -> None:
     existing = collection.get(include=["metadatas"])
     existing_hash = {i: m.get("text_sha") for i, m in zip(existing["ids"], existing["metadatas"])}
     wanted = {c["chunk_id"] for c in chunks}
-    todo = [c for c in chunks if existing_hash.get(c["chunk_id"]) != text_hash(c["text"])]
+    todo = [c for c in chunks if existing_hash.get(c["chunk_id"]) != text_hash(embed_input(c))]
     stale = [i for i in existing_hash if i not in wanted]
     # Same text but changed metadata (title, page, ...): update the metadata without re-embedding.
     existing_meta = dict(zip(existing["ids"], existing["metadatas"]))
@@ -80,7 +89,7 @@ def main() -> None:
              and any(existing_meta[c["chunk_id"]].get(k) != c[k] for k in METADATA_FIELDS)]
 
     encoding = tiktoken.encoding_for_model(model)
-    tokens = sum(len(encoding.encode(c["text"])) for c in todo)
+    tokens = sum(len(encoding.encode(embed_input(c))) for c in todo)
     logger.info("%d chunks: %d to embed (%d tokens, est. $%.4f), %d metadata-only updates, %d up to date, "
                 "%d stale to delete", len(chunks), len(todo), tokens, tokens / 1e6 * PRICE_PER_M_TOKENS,
                 len(retag), len(chunks) - len(todo) - len(retag), len(stale))
@@ -92,17 +101,17 @@ def main() -> None:
     if retag:
         collection.update(
             ids=[c["chunk_id"] for c in retag],
-            metadatas=[{**{k: c[k] for k in METADATA_FIELDS}, "text_sha": text_hash(c["text"])} for c in retag],
+            metadatas=[{**{k: c[k] for k in METADATA_FIELDS}, "text_sha": text_hash(embed_input(c))} for c in retag],
         )
     embedder = OpenAIEmbeddings(model=model, max_retries=5)
     for start in range(0, len(todo), BATCH_SIZE):
         batch = todo[start:start + BATCH_SIZE]
-        vectors = embedder.embed_documents([c["text"] for c in batch])
+        vectors = embedder.embed_documents([embed_input(c) for c in batch])
         collection.upsert(
             ids=[c["chunk_id"] for c in batch],
             embeddings=vectors,
             documents=[c["text"] for c in batch],
-            metadatas=[{**{k: c[k] for k in METADATA_FIELDS}, "text_sha": text_hash(c["text"])} for c in batch],
+            metadatas=[{**{k: c[k] for k in METADATA_FIELDS}, "text_sha": text_hash(embed_input(c))} for c in batch],
         )
         logger.info("embedded %d/%d", start + len(batch), len(todo))
     logger.info("collection %r in %s now holds %d chunks", COLLECTION, persist_dir, collection.count())

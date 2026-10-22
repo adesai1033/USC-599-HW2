@@ -7,6 +7,7 @@ behind by a process that was killed are removed (on Cloud Run /tmp is memory, so
 """
 
 import atexit
+import math
 import os
 import shutil
 import tempfile
@@ -74,15 +75,31 @@ def _where(request: SearchRequest) -> dict | None:
     return clauses[0] if clauses else None
 
 
-def build_retriever(store: Chroma) -> Runnable[SearchRequest, list[dict]]:
-    """Runnable: SearchRequest -> chunks [{chunk_id, arxiv_id, title, section, page, url, score, text}], best first."""
+def build_retriever(
+    store: Chroma, citation_counts: dict[str, int] | None = None, citation_prior: float = 0.0
+) -> Runnable[SearchRequest, list[dict]]:
+    """Runnable: SearchRequest -> chunks [{chunk_id, arxiv_id, title, section, page, url, score, text}], best first.
+
+    With a citation_prior > 0, a wider set of candidates is re-ranked by
+    cosine similarity + citation_prior * log10(1 + citations of the chunk's paper).
+    Follow-up papers restate a famous method in their own words, often closer to a question than the
+    original paper's text, and this lets the paper that introduced it rank first. "score" stays the
+    plain cosine similarity.
+    """
+    counts = citation_counts or {}
+
+    def ranking(arxiv_id: str, similarity: float) -> float:
+        return similarity + citation_prior * math.log10(1 + counts.get(arxiv_id, 0))
 
     async def search(request: SearchRequest) -> list[dict]:
-        hits = await store.asimilarity_search_with_score(request.query, k=request.k, filter=_where(request))
+        fetch = max(4 * request.k, 40) if citation_prior > 0 else request.k
+        hits = await store.asimilarity_search_with_score(request.query, k=fetch, filter=_where(request))
+        # The collection uses cosine distance, so 1 - distance is cosine similarity (higher is better).
+        scored = [(doc, 1 - distance) for doc, distance in hits]
+        scored.sort(key=lambda hit: ranking(hit[0].metadata["arxiv_id"], hit[1]), reverse=True)
         return [
-            # The collection uses cosine distance, so 1 - distance is cosine similarity (higher is better).
-            {**{f: doc.metadata[f] for f in CHUNK_FIELDS}, "score": round(1 - distance, 4), "text": doc.page_content}
-            for doc, distance in hits
+            {**{f: doc.metadata[f] for f in CHUNK_FIELDS}, "score": round(similarity, 4), "text": doc.page_content}
+            for doc, similarity in scored[:request.k]
         ]
 
     return RunnableLambda(search, name="corpus_retriever")

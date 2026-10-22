@@ -27,10 +27,10 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from agents.registry import AgentSpec
 from config import worker_max_tool_rounds
-from graph.state import Citation, Finding, OrchestratorState
+from graph.state import AgentError, Citation, Finding, OrchestratorState
 from graph.supervisor import latest_question
 from graph.trace import emit_trace
-from rag.citations import is_web_id, parse_citation_ids
+from rag.citations import attribution_mismatches, is_web_id, parse_citation_ids
 
 WorkerNode = Callable[[OrchestratorState], Awaitable[dict]]
 
@@ -39,6 +39,11 @@ SUMMARIZE_NOW = (
     "citing only IDs that appear in them. Do not call any more tools."
 )
 CORPUS_TOOLS = {"search_corpus", "get_chunks"}
+FIX_ATTRIBUTION = (
+    "Some claims name a paper but cite a source that never mentions it:\n{problems}\n\n"
+    "Rewrite your findings in full. For each of these claims, cite a tool result above that is about the paper "
+    "it names, or remove the claim. Keep everything else as it was. Do not call any tools."
+)
 
 
 class WorkerState(TypedDict):
@@ -127,6 +132,23 @@ def build_citations(cited: Iterable[str], messages: list[AnyMessage]) -> list[Ci
     return citations
 
 
+def source_texts(messages: list[AnyMessage]) -> dict[str, str]:
+    """For each source returned in this run, the text that identifies it, for attribution checks."""
+    texts: dict[str, str] = {}
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            for c in _chunks(message):
+                texts[c["chunk_id"]] = f"{c.get('arxiv_id', '')} {c.get('title', '')}"
+            for r in _web_results(message):
+                texts[r["source_id"]] = f"{r['url']} {r.get('title', '')} {r.get('content', '')}"
+    return texts
+
+
+def _describe(mismatches: list[tuple[str, list[str], list[str]]]) -> str:
+    return "\n".join(f"- \"{claim[:200]}\" names {', '.join(ids)} but cites {', '.join(cited)}"
+                     for claim, cited, ids in mismatches)
+
+
 def retrieved_chunk_ids(messages: list[AnyMessage]) -> list[str]:
     """Every chunk ID returned by search_corpus or get_chunks in this run, cited or not, in order."""
     ids: list[str] = []
@@ -190,7 +212,28 @@ def make_worker(spec: AgentSpec, tools: list[BaseTool], llm: BaseChatModel, *, u
         messages = result["messages"]
         final = next((m for m in reversed(messages) if isinstance(m, AIMessage)), AIMessage(""))
         content = final.text
-        return {
+        update: dict = {}
+
+        # A claim that names one paper but cites another's source is wrong even when the ID was
+        # retrieved, so the retrieval check in 4c can't catch it. Give the model one chance to fix it.
+        sources = source_texts(messages)
+        if mismatches := attribution_mismatches(content, sources):
+            emit_trace(spec.name, "error", step=state.get("step"), agent=spec.name,
+                       detail=f"attribution check: {len(mismatches)} claim(s) cite a source that doesn't mention "
+                              "the paper they name; asking for a fix")
+            fix = HumanMessage(FIX_ATTRIBUTION.format(problems=_describe(mismatches)))
+            revised = (await llm.ainvoke([SystemMessage(system_prompt), *messages, fix])).text
+            content = revised or content
+            if mismatches := attribution_mismatches(content, sources):
+                emit_trace(spec.name, "error", step=state.get("step"), agent=spec.name,
+                           detail=f"attribution check: {len(mismatches)} claim(s) still mismatched")
+                update["errors"] = [AgentError(
+                    agent=spec.name, kind="attribution_mismatch",
+                    message="Some findings cite a source that doesn't mention the paper they name; don't use "
+                            "those citations for those claims:\n" + _describe(mismatches),
+                )]
+
+        return update | {
             "findings": [Finding(agent=spec.name, content=content,
                                  citations=build_citations(parse_citation_ids(content), messages))],
             "retrieved_chunk_ids": retrieved_chunk_ids(messages),
