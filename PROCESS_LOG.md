@@ -14,6 +14,31 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-21 — `ingest/embed.py`
+
+**Built:** `embed.py` embeds `data/chunks.jsonl` with `text-embedding-3-small` into the
+persistent Chroma collection `papers` in `index/chroma/`, using cosine distance.
+- **Metadata:** every chunk keeps `chunk_id, arxiv_id, title, year, section, page, url`.
+- **Incremental:** each chunk stores a hash of its text, so a re-run embeds only new or
+  changed chunks and deletes ones that were removed. Batches of 256 are written as they
+  finish.
+- **Dry run:** `--dry-run` gives an exact tiktoken count and a cost estimate without any API
+  calls.
+- **Model check:** the script refuses to mix embedding models in one index.
+
+**Dependencies (approved):** `langchain-openai==1.7.2`, `langchain-chroma==1.1.0` and
+`chromadb==1.5.9`, added to `requirements.txt` because the runtime retriever needs them.
+
+**Result:**
+- 4,870 chunks, 2,132,107 tokens, about $0.043 at $0.02 per 1M tokens (price checked
+  2026-10-21). The index is 121 MB.
+- A second run embedded nothing.
+
+**Retrieval check:** 10 test queries through `langchain-chroma`, top 6 each. All 10 were
+relevant, and the target paper ranked first for Instant-NGP, Mip-NeRF, SplaTAM, BARF and
+D-NeRF. For the 3DGS rendering query, the top 6 came from related Gaussian Splatting papers
+rather than the original. Something to watch in RAGAS.
+
 ### 2026-10-21 — `ingest/chunk.py`
 
 **Built:** `chunk.py` reads `data/parsed/` and writes `data/chunks.jsonl` with the fields
