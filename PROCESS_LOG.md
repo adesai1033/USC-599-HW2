@@ -97,6 +97,16 @@ a cause before any fix.
 turning down supervisor thinking. Fix 1 with the re-embed, after approval. Fix 2 as part of
 Phase 4c.
 
+**Status (2026-10-22):** 4 and 5 are fixed in `c094375`. Still open:
+- third-party arXiv mirrors (e.g. alphaxiv.org) get their own web IDs;
+- issues 1, 2 and 3;
+- the worker doesn't reliably use Tavily's `time_range`, so a "this month" question found few
+  October 2026 papers in the re-run (the answer said so honestly).
+
+Next, in order: mirrors; a worker stopping rule and less supervisor thinking (3), with
+`time_range` guidance; a check that a claim's paper matches its cited source (2); and embedding
+chunks with their paper title (1, a paid re-embed).
+
 ### 2026-10-22 — Phase 4b: worker factory and the `research` worker
 
 **Built:**
