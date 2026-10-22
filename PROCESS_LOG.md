@@ -14,6 +14,24 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-21 — Phase 1 deployed to Cloud Run (revision `paper-assistant-00001-2hw`)
+
+**Done:** ran `./deploy.sh` (Cloud Build to Artifact Registry, then Cloud Run in `us-west1`
+as `paper-assistant-run`). No code changes.
+
+**Verified on the deployed URL** (`https://paper-assistant-428458746699.us-west1.run.app`)
+- `GET /health` returns `{"status":"ok"}`.
+- `POST /chat/stream` sends many `token` frames followed by exactly one `done`.
+  TTFT was 7.3 s and the total 14.5 s on a warm instance; most of the TTFT is Gemini
+  thinking time.
+
+**Still open**
+- Confirm the stream isn't being buffered on the way through, using timestamped curl output.
+- Test a request from a cold start.
+- The UI shows Markdown and LaTeX as raw text.
+- Gemini cites papers from its own memory. The citation validator in a later phase will
+  block this.
+
 ### 2026-10-21 16:53 PDT — Phase 1 walking skeleton (`dd9eaff`)
 
 **Goal:** before any multi-agent code, prove that FastAPI, SSE token streaming, the static
