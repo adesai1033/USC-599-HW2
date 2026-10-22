@@ -14,6 +14,58 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Known issues after Phase 4b (diagnosed, not yet fixed)
+
+The four Phase 4b CLI runs worked end to end, but five things don't work well. Each was traced to
+a cause before any fix.
+
+1. **Ranking: a broad 3DGS question doesn't retrieve the 3DGS paper.**
+   - For "How does 3D Gaussian Splatting render a novel view?", `2308.04079` is not in the top 60
+     results. The worker's keyword-heavy rewrite ranks it 7th.
+   - **Cause:** the 3DGS paper never uses the phrase "Gaussian Splatting" or "3DGS" in its own
+     text (0 mentions in 27 chunks). The name appears only in the title, and titles aren't
+     embedded with the chunks.
+   - Meanwhile 90 follow-up papers re-describe 3DGS rendering in their introductions, related
+     work and preliminaries (284 chunks, about 0.85 mentions per chunk), and those win the
+     similarity search.
+   - **Possible fixes:** embed each chunk with its paper title and section; add keyword (BM25)
+     search alongside the embeddings; limit results per paper. Embedding with titles needs a
+     paid re-embed.
+2. **Wrong citation: a claim was attributed to the wrong web source.**
+   - In the first "this month" run, DroneSplat was cited to `[web:772d7f0a]`, an MDPI paper
+     comparing NeRF and 3DGS on UAV imagery.
+   - **Cause:** the summarizing call after the tool-round cap had about 35 web results in
+     context, tagged only with opaque IDs, and two of them were on similar drone/UAV topics.
+     Nothing checks that a claim matches its source.
+   - **Note:** the planned 4c validator only checks that a cited ID was retrieved this turn, so
+     it would not catch this, because `web:772d7f0a` was retrieved.
+   - **Possible fixes:** show each source's title beside its ID in the worker's evidence, or
+     check that each claim matches its source.
+3. **Latency: about 50 s per research turn.**
+   - **Worker:** it hits the 4-round tool cap on every question, then makes a fifth,
+     summarizing call. `prompts/research.md` encourages more calls ("reformulate and retry
+     once", "search for each separately", "call get_paper_metadata") and never says when to
+     stop. The re-sent context grows with every round.
+   - **Supervisor:** each decision takes 3.7–3.9 s for about 600 input and 250 output tokens,
+     and about half the output tokens are reasoning. `llm.py` sets no thinking options, so
+     Gemini thinks by default.
+   - **Tools:** fast. `search_corpus` took 0.3–0.9 s and Tavily 1.5–4 s.
+4. **Citation formatting: synthesize groups IDs as `[a, b]` and once wrapped them in backticks.**
+   - **Cause:** conflicting prompt instructions. `synthesize.md` says both "copy citations
+     verbatim" and "one ID per pair of brackets", and `research.md` never forbids grouping, so
+     grouped citations in the findings are copied through.
+   - Both prompts also show citation examples inside Markdown code spans, which the model
+     imitates.
+5. **Duplicate web sources: the same paper gets two web IDs.**
+   - **Cause:** `normalize_url` only lowercases the host, drops tracking parameters and trims
+     trailing slashes. arXiv's abs, html and pdf pages, `vN` versions and `www.arxiv.org` all
+     hash differently, so LoCoSplat was cited as both `abs/2610.04351` and
+     `html/2610.04351v1`.
+
+**Plan:** fix 4 and 5 now (small, free). Fix 3 next, by giving the worker a stopping rule and
+turning down supervisor thinking. Fix 1 with the re-embed, after approval. Fix 2 as part of
+Phase 4c.
+
 ### 2026-10-22 — Phase 4b: worker factory and the `research` worker
 
 **Built:**
