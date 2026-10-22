@@ -14,6 +14,35 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Benchmark questions run before the results table is seeded (no code change)
+
+I ran "Which methods report the best PSNR on Mip-NeRF 360?" and "Which has the lowest LPIPS on
+Tanks and Temples?" with `results` still empty: `ingest/results_seed.csv` has only its header,
+and no rows have been entered yet.
+
+**Worked:**
+- Both went to `data` first. It ran `describe_schema`, then `SELECT COUNT(*) FROM results`, found
+  0 rows, and reported it without inventing numbers.
+- The supervisor then sent both questions to `research`, which looked in paper text and on the web.
+- No crash, empty UNVERIFIED lines, and the SQL was printed.
+
+**Went wrong:**
+- **The PSNR answer stated "27.58 dB average" for 3DGS**, citing
+  `2308.04079#per-scene-error-metrics-00`. That chunk's 27.58 / 0.790 / 0.240 are the 3DGS authors'
+  reruns of the Mip-NeRF 360 *method*, not 3DGS's own score.
+  - The citation was retrieved and the number is in the text, so neither validation check could
+    catch the wrong attribution.
+  - This is why benchmark numbers should come from hand-checked rows (`seed_results.py`) rather
+    than from reading paper text.
+- **A wasted query:** after finding `results` empty, `data` ran a pointless title search
+  (`title LIKE '%Mip-NeRF 360%'`).
+- **Unchecked web numbers:** the LPIPS answer used figures from web sources (NerfBaselines: 2DGS
+  0.123 on Truck) that I haven't checked.
+
+**Still untested:** ranking direction (PSNR descending, LPIPS ascending), dataset averages versus
+scenes, and flagging verified status and settings. These need seeded rows. Next step: fill in about
+20 rows from the papers' own tables, run `python ingest/seed_results.py`, and re-run both questions.
+
 ### 2026-10-22 — Phase 4d: the `data` worker
 
 **Real schema** (checked with `describe_schema` and `run_sql` before writing the prompt):
