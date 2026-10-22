@@ -39,7 +39,7 @@ noisy.
 | Frontend | Vanilla HTML/CSS/JS in `static/`, served by FastAPI. No framework, no build step, no `node_modules` |
 | Durable state | Firestore (Native mode) conversation history keyed by `session_id`; in-memory backend for local dev and tests |
 | Evaluation | RAGAS (pinned version), plus our own latency and cost scripts |
-| Deployment | Docker (multi-stage, non-root, no Node) → Cloud Run service `csci599-a2`, `us-west1`, `--memory 2Gi --cpu 1 --concurrency 10 --timeout 300 --min-instances 0 --max-instances 3` |
+| Deployment | Docker (multi-stage, non-root, no Node) → image `us-west1-docker.pkg.dev/usc-599-hw2/images/paper-assistant` → Cloud Run service `paper-assistant` in project `usc-599-hw2`, `us-west1`, runtime service account `paper-assistant-run@usc-599-hw2.iam.gserviceaccount.com`, `--memory 2Gi --cpu 1 --concurrency 10 --timeout 300 --min-instances 0 --max-instances 3` |
 
 ## Agents
 
@@ -372,8 +372,14 @@ Do not violate them to "make tests pass."
   `/root/.local` into an image that runs as `appuser`; the non-root user can't read
   `/root`. Start uvicorn with `--port ${PORT:-8080}` via `sh -c`, or let `main.py` read
   `PORT`.
-- **Firestore:** a Native-mode database in the project, and a dedicated Cloud Run service
-  account with `roles/datastore.user`. The client uses ADC; no key file in the image.
+- **GCP resources already exist** (created by hand, do not recreate): project
+  `usc-599-hw2`; Artifact Registry Docker repo `images` in `us-west1`; Firestore
+  `(default)` database, Native mode, `us-west1`; runtime service account
+  `paper-assistant-run` with `roles/datastore.user` only. `deploy.sh` must pass
+  `--service-account=paper-assistant-run@usc-599-hw2.iam.gserviceaccount.com`. Without it,
+  Cloud Run runs as the Compute Engine default account, which has project-wide Editor.
+  The Firestore client uses ADC; no key file in the image.
+- **Images go to Artifact Registry**, not `gcr.io` as in the assignment's sample commands.
 - **Cold start:** `min-instances=0` means the first request pays for container start,
   MCP server spawn, and Chroma load. `/health` must not block on those.
 
