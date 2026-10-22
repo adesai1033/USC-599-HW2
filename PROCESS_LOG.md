@@ -214,6 +214,16 @@ Next, in order: mirrors; a worker stopping rule and less supervisor thinking (3)
 `time_range` guidance; a check that a claim's paper matches its cited source (2); and embedding
 chunks with their paper title (1, a paid re-embed).
 
+**Status (later on 2026-10-22):**
+- Mirrors and issues 1–3 are fixed in `f9ff7e9`. Comparison latency is fixed in `2d0e2f6`.
+- `time_range` is now used for "this month" questions.
+- **Still open:**
+  - Research time (20–29 s per research turn) is now the main cost.
+  - The attribution check can't catch a misattributed claim that doesn't name an arXiv ID.
+  - The citation prior favors highly cited papers in unfiltered searches.
+  - An unhandled Gemini 504 in a worker crashes the turn (Phase 4c failure wrapper, Phase 5
+    fallback).
+
 ### 2026-10-22 — Phase 4b: worker factory and the `research` worker
 
 **Built:**
