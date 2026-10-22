@@ -37,7 +37,12 @@ unavailable, so the final answer can say so honestly instead of guessing.
    Never make the next worker re-derive them.
 7. Match the question to the worker descriptions. Counting, ranking or filtering papers by metadata
    (citations, year, venue, authors) or by benchmark numbers goes to the worker that queries the
-   paper database. What a paper says or how a method works goes to the worker that reads paper text.
-   A question that needs both (e.g. "most-cited 2024 papers and what each proposes") goes to the
-   database worker first, then to the text worker with the IDs it found.
+   paper database. A single question about what a paper says or how a method works goes to the
+   worker that reads paper text. A summary or literature review across several papers or a topic
+   ("summarize work on X", "review how X has been addressed", comparing three or more methods) goes
+   to the worker that writes literature reviews. A question that needs the database first (e.g.
+   "most-cited 2024 papers and what each proposes") goes to the database worker, then to a text
+   worker with the IDs it found.
+   - When a later worker should read a web source an earlier worker found, put its URL in the
+     instruction.
 8. Keep `reason` to one line.

@@ -14,6 +14,53 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Phase 4e: the `summary` worker
+
+There was no separate brief, so the scope came from AGENTS.md's summary row: multi-paper summaries
+and literature reviews with `search_corpus`, `get_chunks`, `get_paper_metadata` and
+`tavily_extract`, evidence grouped by paper, every citation kept, disagreements flagged.
+
+**Built:**
+- **`prompts/summary.md`:**
+  - with given IDs, cover each one; with a topic, search first, then pick 3–6 papers;
+  - make the per-paper `search_corpus` calls together, in one round;
+  - `get_chunks` for full text, `tavily_extract` only for URLs given in the instruction;
+  - per-paper blocks, then an **Across papers** section on relations and conflicts.
+- **Registry:**
+  - `summary` is registered with `max_tool_rounds=6`.
+  - Its description covers summaries, reviews and comparisons of 3 or more methods.
+  - `research`'s description now excludes multi-paper reviews; one- and two-method comparisons stay
+    with research.
+- **Supervisor:**
+  - the routing rule names the literature-review worker by description, not by name;
+  - a rule to put a web source's URL in the instruction for a later worker;
+  - the finding view lists each web citation's URL, so `tavily_extract` can use it.
+- **Tier:** every worker runs on the fast tier until Phase 5, because `get_llm` has no strong tier
+  yet and `summary`'s default is strong.
+
+**Verified:**
+- `pytest tests/` gives 122 passed, 2 skipped (5 new tests in `tests/test_summary_worker.py`,
+  including a research → summary hand-off of a web URL).
+- **Real runs:**
+  - "Summarize how anti-aliasing has been addressed in radiance fields" → summary; 14 citations
+    from 5 papers (Mip-NeRF, Mip-NeRF 360, Zip-NeRF, Mip-Splatting, Analytic-Splatting). The finding
+    has an Across papers section with conflicts (volume rendering vs real-time; Mip-Splatting
+    over-smoothing, which Analytic-Splatting addresses), and synthesize kept it.
+  - "Compare how NeRF, Instant-NGP and 3DGS trade off training speed and quality" → summary;
+    citations from all 3 papers.
+  - "Most-cited 2024 papers and what each proposes" now goes data → summary. The summary worker got
+    all 10 IDs, searched them in one round, and every paper has a chunk citation as well as its
+    `[db:...]`.
+  - Routing regression: 3DGS lookup and NeRF vs Instant-NGP → research; most cited → data;
+    this month → research; point cloud → none; 9999.99999 → research. No unverified citations in
+    any run.
+
+**Still weak:**
+- **Batching:** Gemini doesn't reliably batch tool calls. Before the "one round" prompt line both
+  runs hit the 6-round cap; after it, one of two comparison runs still did (59 s, against 41 s for
+  the other).
+- **Model tier:** summary runs on the fast tier until Phase 5 routes it to the strong tier.
+
 ### 2026-10-22 — Phase 4d testing finished: benchmark rankings on a seeded copy
 
 **Setup:**

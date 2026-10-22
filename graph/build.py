@@ -60,10 +60,10 @@ def build_graph(
     if workers is None:
         if mcp is None:
             raise ValueError("build_graph needs a started MCPTools (mcp=...) to build the registry's workers")
-        # Low thinking halved the research worker's time (27 s -> 13 s) and still found the same papers.
+        # Every worker runs on the fast tier until Phase 5's router picks tiers (summary's default is
+        # strong). Low thinking halved the research worker's time (27 s -> 13 s) and found the same papers.
         workers = {
-            name: make_worker(WORKERS[name], partial(mcp.tools_for, name),
-                              get_llm(WORKERS[name].default_tier, thinking_level="low"),
+            name: make_worker(WORKERS[name], partial(mcp.tools_for, name), get_llm("fast", thinking_level="low"),
                               unavailable_notes=partial(mcp.unavailable_notes, name))
             for name in available_workers()
         }

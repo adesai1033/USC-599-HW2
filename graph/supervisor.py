@@ -89,8 +89,8 @@ def _finding_line(finding: Finding) -> str:
     line = f"- from {finding.agent} (grounded: {'yes' if finding.grounded else 'no'}): {preview}"
     if papers:
         line += f"\n  Papers cited: {', '.join(papers)}"
-    if web := [c.id for c in finding.citations if c.source == "web"]:
-        line += f"\n  Web sources cited: {', '.join(web)}"
+    if web := [f"{c.id} {c.url}" if c.url else c.id for c in finding.citations if c.source == "web"]:
+        line += f"\n  Web sources cited: {', '.join(web)}"  # URLs, so a later worker can read them
     return line
 
 
