@@ -14,6 +14,46 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Phase 4d testing finished: benchmark rankings on a seeded copy
+
+**Setup:**
+- The real `ingest/results_seed.csv` and `index/papers.sqlite` were left untouched (still 0
+  results rows), as agreed.
+- I copied the database to a scratch folder and seeded the copy with `seed_results.py` from 42 rows
+  read from the papers' own PDF tables:
+  - 3DGS (2308.04079) Tab. 1: Plenoxels, INGP-Base/Big, Mip-NeRF 360 and 3DGS 7K/30K on
+    Mip-NeRF 360 and Tanks and Temples;
+  - 2DGS (2403.17888) Tab. 8–9: 2DGS averages plus two bonsai scene rows.
+- The two 2DGS average rows were set to `verified=0` to exercise the unverified flag.
+- The app was pointed at the copy with `PAPERS_DB_PATH`.
+
+**Results:**
+- **"Best PSNR on Mip-NeRF 360":** data only. The ranking was descending and exactly right: 27.69
+  > 27.21 > 27.03 > 25.60 > 25.59 > 25.30 > 23.08.
+- **"Lowest LPIPS on Tanks and Temples":** data only. The ranking was ascending and exactly right:
+  0.183 < 0.257 < 0.280 < 0.305 < 0.330 < 0.379.
+- **Other checks:** the SQL matched names case-insensitively and was printed, citations were `db`
+  only, and there were no unverified citations.
+- **Per-scene rows:** with the bonsai rows added (31.98 and 31.52), the worker kept dataset
+  averages and scenes separate, so the 31.98 scene score didn't top the average ranking. The SQL
+  itself didn't filter on `scene IS NULL`.
+
+**Fixed (prompts only):** the data finding reported `verified` per row, but synthesize sometimes
+dropped "verified = 0", and nothing said the numbers came from different sources (copied from the
+original paper vs reproduced by the 3DGS authors).
+- `data.md` now requires a "Comparability:" line.
+- `synthesize.md` now requires keeping unverified marks and comparability caveats.
+- Re-run: both answers flag 2DGS as unverified and explain where the numbers come from.
+
+**Still open:**
+- The worker skips the `SELECT DISTINCT benchmark` step and uses `LIKE` patterns directly. That works
+  with today's consistent spellings.
+- The real results table is empty until you seed it. The scratch CSV (42 rows, each with a source
+  note) can be a starting point, but each row needs a human check before it goes in with
+  `verified=1`.
+
+**Verified:** `pytest tests/` gives 117 passed, 2 skipped.
+
 ### 2026-10-22 — Benchmark questions run before the results table is seeded (no code change)
 
 I ran "Which methods report the best PSNR on Mip-NeRF 360?" and "Which has the lowest LPIPS on

@@ -41,6 +41,10 @@ to expand. Pick the details that answer what was asked, and leave out the rest. 
   citation count and benchmark numbers. Never use it for what a paper proposes or how a method works;
   that needs a corpus or web citation from a finding. If no finding describes a paper, list it with
   its database facts only and say its content wasn't looked up.
+- When you report benchmark numbers from a finding, keep its caveats: mark any number with
+  verified = 0 as unverified, and keep the finding's "Comparability:" point (numbers copied from the
+  original paper vs reproduced by other authors, different scene sets or settings). Never present
+  numbers from different settings as a clean head-to-head ranking without saying so.
 - Keep any SQL a finding reports out of your answer unless the user asked for it.
 - Exactly one ID per pair of brackets. For several sources, write them side by side, like
   [2308.04079#method-03][2003.08934#method-00]. If a finding groups IDs in one bracket, split them

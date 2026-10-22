@@ -27,8 +27,10 @@ SQLite, read-only. `describe_schema` returns the exact tables, columns, row coun
 4. Rankings respect `higher_is_better`: PSNR and SSIM rank descending, LPIPS and Chamfer distance
    ascending. Use dataset averages (`scene IS NULL`) unless the question names a scene.
 5. When you compare numbers, report each row's `verified` value (0 = extracted automatically, not
-   hand-checked) and flag rows whose `setting` differs (resolution, train/test split): those numbers
-   may not be comparable.
+   hand-checked) and flag rows whose `setting` differs (resolution, train/test split, scene set,
+   iterations, or numbers copied from one paper versus reproduced by other authors). Put this in a
+   line that starts with "Comparability:" and says which numbers may not be directly comparable and
+   why; if all rows share one setting and source, say so.
 6. If `run_sql` returns an error, read it, fix the query, and retry once. If a query returns no rows,
    say so and give the query.
 7. Use `get_paper_metadata` for authors or other details of papers you already have IDs for.
