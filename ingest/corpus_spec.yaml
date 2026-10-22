@@ -1,1 +1,160 @@
 # Corpus scope: subfield, arXiv categories, keywords, date range, paper count
+#
+# Single source of truth for what goes into the RAG corpus. Read by ingest/fetch_arxiv.py.
+# Changing the scope here changes what every agent can answer; see AGENTS.md before editing.
+
+version: 1
+
+subfield: "3D computer vision: neural scene representations and 3D reconstruction"
+description: >
+  Papers that represent or reconstruct 3D scenes from images: NeRF and its variants,
+  3D Gaussian Splatting, neural implicit surfaces, learned multi-view stereo,
+  feed-forward / generalizable reconstruction, dynamic scenes, and neural SLAM.
+
+arxiv:
+  # A paper qualifies if ANY of its categories (primary or cross-list) is in this list.
+  categories: [cs.CV, cs.GR]
+  date_range:
+    start: 2020-01-01   # by first-version submission date
+    end: 2026-10-21     # date this spec was written; bump when refreshing the corpus
+
+paper_count:
+  min: 150
+  max: 300
+  target: 220
+
+# Landmark papers, always included (IDs verified against the arXiv API on 2026-10-21).
+# They count toward their topic's quota.
+seed_papers:
+  # NeRF and quality / unbounded / in-the-wild variants
+  - {arxiv_id: "2003.08934", name: "NeRF", topic: nerf}
+  - {arxiv_id: "2103.13415", name: "Mip-NeRF", topic: nerf}
+  - {arxiv_id: "2111.12077", name: "Mip-NeRF 360", topic: nerf}
+  - {arxiv_id: "2304.06706", name: "Zip-NeRF", topic: nerf}
+  - {arxiv_id: "2112.03907", name: "Ref-NeRF", topic: nerf}
+  - {arxiv_id: "2008.02268", name: "NeRF in the Wild", topic: nerf}
+  - {arxiv_id: "2302.04264", name: "Nerfstudio", topic: nerf}
+  # Fast radiance fields (grids, hashing, factorization)
+  - {arxiv_id: "2201.05989", name: "Instant-NGP", topic: fast_radiance_fields}
+  - {arxiv_id: "2112.05131", name: "Plenoxels", topic: fast_radiance_fields}
+  - {arxiv_id: "2203.09517", name: "TensoRF", topic: fast_radiance_fields}
+  - {arxiv_id: "2111.11215", name: "DVGO", topic: fast_radiance_fields}
+  # 3D Gaussian Splatting
+  - {arxiv_id: "2308.04079", name: "3D Gaussian Splatting", topic: gaussian_splatting}
+  - {arxiv_id: "2311.16493", name: "Mip-Splatting", topic: gaussian_splatting}
+  - {arxiv_id: "2312.00109", name: "Scaffold-GS", topic: gaussian_splatting}
+  - {arxiv_id: "2404.09591", name: "3DGS as MCMC", topic: gaussian_splatting}
+  # Surfaces (neural implicit and Gaussian-based)
+  - {arxiv_id: "2106.10689", name: "NeuS", topic: surfaces}
+  - {arxiv_id: "2106.12052", name: "VolSDF", topic: surfaces}
+  - {arxiv_id: "2206.00665", name: "MonoSDF", topic: surfaces}
+  - {arxiv_id: "2306.03092", name: "Neuralangelo", topic: surfaces}
+  - {arxiv_id: "2403.17888", name: "2D Gaussian Splatting", topic: surfaces}
+  - {arxiv_id: "2311.12775", name: "SuGaR", topic: surfaces}
+  - {arxiv_id: "2404.10772", name: "Gaussian Opacity Fields", topic: surfaces}
+  # Learned multi-view stereo
+  - {arxiv_id: "2012.01411", name: "PatchmatchNet", topic: mvs}
+  - {arxiv_id: "2103.15595", name: "MVSNeRF", topic: mvs}
+  # Feed-forward / generalizable reconstruction
+  - {arxiv_id: "2012.02190", name: "pixelNeRF", topic: feed_forward}
+  - {arxiv_id: "2102.13090", name: "IBRNet", topic: feed_forward}
+  - {arxiv_id: "2312.12337", name: "pixelSplat", topic: feed_forward}
+  - {arxiv_id: "2403.14627", name: "MVSplat", topic: feed_forward}
+  - {arxiv_id: "2311.04400", name: "LRM", topic: feed_forward}
+  - {arxiv_id: "2312.14132", name: "DUSt3R", topic: feed_forward}
+  - {arxiv_id: "2406.09756", name: "MASt3R", topic: feed_forward}
+  - {arxiv_id: "2408.16061", name: "Spann3R", topic: feed_forward}
+  - {arxiv_id: "2501.12387", name: "CUT3R", topic: feed_forward}
+  - {arxiv_id: "2503.11651", name: "VGGT", topic: feed_forward}
+  # Dynamic scenes
+  - {arxiv_id: "2011.13961", name: "D-NeRF", topic: dynamic}
+  - {arxiv_id: "2011.12948", name: "Nerfies", topic: dynamic}
+  - {arxiv_id: "2308.09713", name: "Dynamic 3D Gaussians", topic: dynamic}
+  - {arxiv_id: "2310.08528", name: "4D Gaussian Splatting", topic: dynamic}
+  # Neural SLAM and pose-free reconstruction
+  - {arxiv_id: "2103.12352", name: "iMAP", topic: slam}
+  - {arxiv_id: "2112.12130", name: "NICE-SLAM", topic: slam}
+  - {arxiv_id: "2108.10869", name: "DROID-SLAM", topic: slam}
+  - {arxiv_id: "2312.02126", name: "SplaTAM", topic: slam}
+  - {arxiv_id: "2312.06741", name: "Gaussian Splatting SLAM", topic: slam}
+  - {arxiv_id: "2104.06405", name: "BARF", topic: slam}
+
+# Per-topic fill-out. Each query uses arXiv API search syntax. fetch_arxiv.py collects the
+# candidates, applies the date and category filters and the exclusions, then ranks them by
+# Semantic Scholar citation count. It keeps the top `quota` per topic (seeds included), with
+# at least `min_recent` papers first submitted on or after `recent_since` so newer work isn't
+# crowded out by older, highly cited papers. Quotas sum to paper_count.target.
+recent_since: 2025-01-01
+topics:
+  nerf:
+    quota: 35
+    min_recent: 4
+    queries:
+      - 'abs:"neural radiance field" AND abs:"novel view synthesis"'
+      - 'ti:NeRF AND (abs:anti-aliasing OR abs:unbounded OR abs:"in the wild")'
+  fast_radiance_fields:
+    quota: 20
+    min_recent: 2
+    queries:
+      - 'abs:"radiance field" AND (abs:"hash encoding" OR abs:"voxel grid" OR abs:"tensor decomposition")'
+      - 'abs:"radiance field" AND abs:real-time AND abs:rendering'
+  gaussian_splatting:
+    quota: 45
+    min_recent: 10
+    queries:
+      - 'abs:"gaussian splatting" AND abs:"novel view synthesis"'
+      - 'abs:"gaussian splatting" AND (abs:densification OR abs:aliasing OR abs:compression OR abs:"level of detail")'
+  surfaces:
+    quota: 25
+    min_recent: 4
+    queries:
+      - 'abs:"neural implicit surface" AND abs:"multi-view"'
+      - 'abs:"signed distance" AND abs:"volume rendering" AND abs:reconstruction'
+      - 'abs:"gaussian splatting" AND abs:"surface reconstruction"'
+  mvs:
+    quota: 20
+    min_recent: 3
+    queries:
+      - 'ti:"multi-view stereo" AND abs:depth'
+      - 'abs:"multi-view stereo" AND (abs:learning OR abs:transformer OR abs:"cost volume")'
+  feed_forward:
+    quota: 35
+    min_recent: 10
+    queries:
+      - 'abs:"feed-forward" AND (abs:"gaussian splatting" OR abs:"3D reconstruction")'
+      - 'abs:generalizable AND (abs:"radiance field" OR abs:"gaussian splatting")'
+      - 'abs:pointmap AND abs:reconstruction'
+  dynamic:
+    quota: 15
+    min_recent: 3
+    queries:
+      - 'abs:"dynamic scene" AND (abs:"radiance field" OR abs:"gaussian splatting")'
+  slam:
+    quota: 25
+    min_recent: 5
+    queries:
+      - 'abs:SLAM AND (abs:"neural implicit" OR abs:"radiance field" OR abs:"gaussian splatting")'
+      - 'abs:"pose-free" AND (abs:"radiance field" OR abs:"gaussian splatting")'
+
+# Drop candidates whose title or abstract matches these (case-insensitive). They keep the
+# corpus on scene representation and reconstruction rather than all of 3D vision.
+exclude:
+  title_terms:
+    - survey
+    - review
+    - avatar
+    - text-to-3d
+    - "text-to-4d"
+    - "3d object detection"
+    - "semantic segmentation"
+    - "6d pose"
+    - "human pose"
+    - "point cloud classification"
+    - medical
+  abstract_terms:
+    - "large language model"
+    - "autonomous driving perception"
+
+pdf:
+  # Skip papers whose PDF is missing or larger than this, rather than parsing partial text.
+  max_size_mb: 40

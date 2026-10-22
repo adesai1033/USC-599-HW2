@@ -14,6 +14,25 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-21 — Phase 2 started: `ingest/corpus_spec.yaml`
+
+**Done:** wrote the corpus spec covering scope, the `cs.CV`/`cs.GR` categories, a date range
+of 2020-01-01 to 2026-10-21, and a target of 220 papers (min 150, max 300).
+- **44 seed papers across 8 topics:** NeRF, fast radiance fields, Gaussian Splatting,
+  surfaces, MVS, feed-forward, dynamic, and SLAM.
+- **Fill-out queries:** each topic has arXiv queries and a quota. The quotas sum to 220.
+  Candidates are ranked by citation count, with a minimum number of papers from 2025 or
+  later per topic.
+- **Exclusions:** title and abstract terms that filter out surveys, avatars, text-to-3D,
+  detection, segmentation and pose papers.
+
+**Verified:** checked every seed ID against the arXiv API. Two IDs I had from memory were
+wrong (Neuralangelo and PatchmatchNet) and were corrected to 2306.03092 and 2012.01411. The
+YAML parses, all 44 seeds are unique, and the quotas sum to the target.
+
+**Decision pending:** MVSNet (1804.02505) is from 2018, before the 2020 start date, so it
+was left out.
+
 ### 2026-10-21 — Phase 0 smoke test passed
 
 **Done:** ran a one-off curl script (not committed) that made one call to each provider,
