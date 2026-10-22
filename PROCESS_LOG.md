@@ -14,6 +14,43 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Phase 4b: worker factory and the `research` worker
+
+**Built:**
+- **`graph/workers.py`:** `make_worker(spec, tools, llm)`, a compiled subgraph
+  `worker_agent ⇄ worker_tools`. `worker_tools` wraps `ToolNode(handle_tool_errors=True)` and
+  emits `tool_call`/`tool_result` traces. After `WORKER_MAX_TOOL_ROUNDS` (default 4) the model
+  makes one summarizing call without tools.
+- **Worker output:** one `Finding`, whose citations get chunk and web metadata from this run's
+  tool results, plus `retrieved_chunk_ids`.
+- **`rag/citations.py`:** parses `[chunk_id]` and `[web:<8 hex>]`, including adjacent citations
+  and comma-separated groups.
+- **`mcp_client.py`:**
+  - Tavily results get `source_id = web:` plus 8 hex chars of sha1(normalized URL).
+  - A malformed payload becomes a clean tool error.
+  - An agent missing an allowlisted tool is logged, and that server's description goes into the
+    worker's prompt.
+- **Registry and wiring:** `research` is registered, and `build_graph(mcp=...)` builds workers
+  from the registry. The CLI opens MCP once and prints the retrieved IDs and a citation list.
+
+**Findings while testing:**
+- **Subgraph traces:** trace events written inside a subgraph reach the parent's stream only
+  with `astream(..., subgraphs=True)`, so the CLI and the test helper use it.
+- **Dates:** the worker didn't know today's date. It searched for "October 2024" papers when
+  asked about "this month", and once cited an MDPI page for a different paper. The worker and
+  synthesize inputs now include today's date. `prompts/research.md` says to use it and Tavily's
+  `time_range`, and notes that arXiv IDs encode YYMM.
+- **Retrieval:** a broad search for the 3DGS question didn't return the 3DGS paper in the top 6.
+  The worker recovered by filtering by `arxiv_ids`.
+
+**Verified:**
+- `pytest tests/`: 80 passed, 2 live tests skipped (14 new worker tests).
+- Real CLI runs:
+  - 3DGS: the answer cites `2308.04079` chunks.
+  - "This month": October 2026 arXiv papers with `[web:xxxxxxxx]` IDs.
+  - NeRF vs Instant-NGP: four filtered corpus searches, citing both papers.
+  - "What's a point cloud?": no tool calls.
+
 ### 2026-10-22 — Phase 4a: orchestration skeleton (no real workers)
 
 **Dependency (approved):** `langgraph==1.2.16`, the latest release; it needs `langchain-core>=1.4.7,<2`.

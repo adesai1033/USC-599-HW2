@@ -4,10 +4,12 @@
   python scripts/cli.py                                                         # REPL
 
 Trace events print as dim lines; the answer streams live. Each turn is independent (no history yet).
+The MCP servers start once and are reused across REPL turns.
 """
 
 import asyncio
 import logging
+import os
 import sys
 import time
 import uuid
@@ -18,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from langchain_core.messages import HumanMessage  # noqa: E402
 
 from graph.build import DEFAULT_CONFIG, build_graph  # noqa: E402
+from mcp_client import MCPTools, install_log_redaction  # noqa: E402
 
 TTY = sys.stdout.isatty()
 DIM, RESET = ("\033[2m", "\033[0m") if TTY else ("", "")
@@ -40,7 +43,10 @@ async def run_turn(graph, question: str) -> None:
     final: dict = {}
     answering = False
     inputs = {"session_id": uuid.uuid4().hex, "messages": [HumanMessage(question)], "step": 0}
-    async for mode, payload in graph.astream(inputs, config=DEFAULT_CONFIG, stream_mode=["custom", "messages", "values"]):
+    # subgraphs=True: trace events written inside worker subgraphs reach this stream too.
+    async for namespace, mode, payload in graph.astream(
+        inputs, config=DEFAULT_CONFIG, stream_mode=["custom", "messages", "values"], subgraphs=True
+    ):
         if mode == "custom":
             if answering:
                 print()
@@ -54,11 +60,12 @@ async def run_turn(graph, question: str) -> None:
                     print()
                     answering = True
                 print(chunk.text, end="", flush=True)
-        else:
+        elif not namespace:  # the root graph's state, not a worker subgraph's
             final = payload
     if answering:
         print()
 
+    print_sources(final)
     errors = final.get("errors", [])
     summary = (
         f"steps={final.get('step', 0)} "
@@ -70,24 +77,48 @@ async def run_turn(graph, question: str) -> None:
     print(f"\n{DIM}— {summary}{RESET}")
 
 
+def print_sources(final: dict) -> None:
+    """The chunk IDs retrieved this turn and a numbered list of the findings' citations."""
+    retrieved = final.get("retrieved_chunk_ids", [])
+    if retrieved:
+        print(f"\n{DIM}Retrieved chunks ({len(retrieved)}): {', '.join(retrieved)}{RESET}")
+    citations = {c.id: c for f in final.get("findings", []) for c in f.citations}
+    if not citations:
+        return
+    print("\nCitations:")
+    for i, c in enumerate(citations.values(), 1):
+        where = ", ".join(x for x in [c.title, f"§{c.section}" if c.section else None,
+                                      f"p.{c.page}" if c.page is not None else None] if x)
+        print(f"  {i}. [{c.id}] {where or '(no metadata)'} — {c.url or ''}")
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
-    graph = build_graph()
-    if len(sys.argv) > 1:
-        await run_turn(graph, " ".join(sys.argv[1:]))
-        return
-    print("3D vision paper assistant — empty line or Ctrl-D to quit.")
-    while True:
-        try:
-            question = (await asyncio.to_thread(input, "\n> ")).strip()
-        except EOFError:
-            break
-        if not question:
-            break
-        try:
-            await run_turn(graph, question)
-        except Exception as exc:  # keep the REPL alive; the graph itself degrades gracefully
-            print(f"error: {type(exc).__name__}: {exc}")
+    install_log_redaction()
+    # Gemini drops "additionalProperties" from MCP tool schemas and warns on every call; it's harmless.
+    logging.getLogger("langchain_google_genai._function_utils").setLevel(logging.ERROR)
+    os.environ["LOG_LEVEL"] = "WARNING"  # quiet the MCP servers' own startup logs
+    mcp = MCPTools()
+    await mcp.start()
+    try:
+        graph = build_graph(mcp=mcp)
+        if len(sys.argv) > 1:
+            await run_turn(graph, " ".join(sys.argv[1:]))
+            return
+        print("3D vision paper assistant — empty line or Ctrl-D to quit.")
+        while True:
+            try:
+                question = (await asyncio.to_thread(input, "\n> ")).strip()
+            except EOFError:
+                break
+            if not question:
+                break
+            try:
+                await run_turn(graph, question)
+            except Exception as exc:  # keep the REPL alive; the graph itself degrades gracefully
+                print(f"error: {type(exc).__name__}: {exc}")
+    finally:
+        await mcp.aclose()
 
 
 if __name__ == "__main__":

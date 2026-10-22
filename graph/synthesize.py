@@ -3,6 +3,7 @@
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from datetime import date
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -44,6 +45,7 @@ def make_synthesize(llm: BaseChatModel | None) -> Callable[[OrchestratorState], 
         context = "\n\n".join([
             f"Question: {latest_question(state)}",
             f"Task type: {state.get('task_type') or 'general'}",
+            f"Today's date: {date.today().isoformat()}",
             f"Findings:\n{_format_findings(state.get('findings', []))}",
             f"Problems:\n{_format_problems(state.get('errors', []))}",
         ])

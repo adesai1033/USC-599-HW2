@@ -9,12 +9,17 @@ Every tool call goes through an interceptor that sends it on the server's curren
 the server is down, the call returns the manifest's "description" as a tool error instead of
 raising, and a server that was up and then disconnected is restarted on a later call.
 
+Tavily results are reshaped before the model sees them: each result gets a deterministic
+source_id ("web:" + 8 hex chars of the URL's sha1), so [web:...] citations stay stable across
+searches. An unparseable or off-schema Tavily payload becomes a clean tool error.
+
 The Tavily URL carries the API key as a query parameter. It is built here from TAVILY_API_KEY.
 install_log_redaction() removes it, and every other provider key, from all log output; failure
 messages are redacted too.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -25,6 +30,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -42,6 +48,8 @@ CALL_TIMEOUT_S = 60.0
 RESTART_COOLDOWN_S = 30.0
 MAX_RESULT_CHARS = 100_000  # longer tool output is cut before it reaches a model
 SECRET_ENV_VARS = ("TAVILY_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY")
+TAVILY_TOOLS = {"tavily_search", "tavily_extract"}
+TRACKING_PARAM = re.compile(r"^(utm_|fbclid$|gclid$)")
 REQUEST_TIMEOUT_CODE = 408  # McpError code the MCP SDK uses for a request that timed out
 
 ENV_REF = re.compile(r"\$\{([A-Z0-9_]+)\}")
@@ -120,6 +128,59 @@ def build_connection(manifest: dict) -> dict:
     if manifest["transport"] == "streamable_http":
         return {"transport": "streamable_http", "url": _expand(manifest["url"]), "session_kwargs": session_kwargs}
     raise ValueError(f"unsupported transport {manifest['transport']!r}")
+
+
+def normalize_url(url: str) -> str:
+    """Lowercase scheme and host, drop the fragment, tracking parameters and a trailing slash."""
+    parts = urlsplit(url.strip())
+    query = urlencode(sorted((k, v) for k, v in parse_qsl(parts.query) if not TRACKING_PARAM.match(k)))
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), query, ""))
+
+
+def web_source_id(url: str) -> str:
+    """Deterministic citation ID for a web source: the same URL always gets the same ID."""
+    return "web:" + hashlib.sha1(normalize_url(url).encode()).hexdigest()[:8]
+
+
+def normalize_tavily(tool_name: str, text: str) -> str:
+    """Reshape a Tavily payload to {results: [{source_id, url, title, content}], ...}; ValueError if malformed."""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("response is not JSON") from exc
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        raise ValueError("response has no results list")
+    normalized = []
+    for result in results:
+        if not isinstance(result, dict) or not isinstance(result.get("url"), str) or not result["url"].strip():
+            raise ValueError("a result has no url")
+        content = result.get("raw_content") if tool_name == "tavily_extract" else result.get("content")
+        normalized.append({
+            "source_id": web_source_id(result["url"]),
+            "url": result["url"],
+            "title": result.get("title") or "",
+            "content": content or result.get("content") or "",
+        })
+    out: dict = {"results": normalized}
+    if payload.get("query"):
+        out["query"] = payload["query"]
+    if payload.get("answer"):
+        out["answer"] = payload["answer"]
+    if payload.get("failed_results"):
+        out["failed_results"] = payload["failed_results"]
+    return json.dumps(out, ensure_ascii=False)
+
+
+def _normalize_tavily_result(tool_name: str, result: CallToolResult) -> CallToolResult:
+    if result.isError:
+        return result
+    text = "".join(b.text for b in result.content if isinstance(b, TextContent))
+    try:
+        return CallToolResult(content=[TextContent(type="text", text=normalize_tavily(tool_name, text))])
+    except ValueError as exc:
+        logger.warning("%s returned a malformed response: %s", tool_name, exc)
+        return _error_result(f"{tool_name} returned a malformed response ({exc}); web results are unavailable for this call.")
 
 
 def _error_result(text: str) -> CallToolResult:
@@ -251,7 +312,10 @@ class MCPTools:
         if session is None:
             return _error_result(status.description)
         try:
-            return _cap(await session.call_tool(request.name, request.args))
+            result = await session.call_tool(request.name, request.args)
+            if request.name in TAVILY_TOOLS:
+                result = _normalize_tavily_result(request.name, result)
+            return _cap(result)
         except McpError as exc:
             if exc.error.code == REQUEST_TIMEOUT_CODE:
                 return _error_result(f"{request.name} timed out after {CALL_TIMEOUT_S:.0f} s; try a narrower request.")
@@ -261,14 +325,21 @@ class MCPTools:
         return _error_result(status.description)
 
     def tools_for(self, agent: str) -> list[BaseTool]:
-        """The agent's allowlisted tools that were discovered, sorted by name."""
+        """The agent's allowlisted tools that were discovered, sorted by name. Missing ones are logged."""
         allowed = AGENTS[agent].tools
+        missing = allowed - self._tools.keys()
+        if missing:
+            logger.warning("agent %r is missing allowlisted tools %s", agent, sorted(missing))
         return [self._tools[n] for n in sorted(allowed & self._tools.keys())]
 
     def unavailable_notes(self, agent: str) -> list[str]:
-        """Descriptions of down servers that provide any of the agent's tools, for its system prompt."""
+        """Descriptions of servers that should provide one of the agent's tools but are down or didn't
+        provide it, for the agent's system prompt."""
         allowed = AGENTS[agent].tools
-        return [s.description for s in self.status.values() if s.state != "up" and s.tools & allowed]
+        return [
+            s.description for s in self.status.values()
+            if s.tools & allowed and (s.state != "up" or (s.tools & allowed) - self._tools.keys())
+        ]
 
     async def aclose(self) -> None:
         for task in self._background:

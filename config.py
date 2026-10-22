@@ -34,6 +34,14 @@ def max_supervisor_steps() -> int:
     return steps
 
 
+def worker_max_tool_rounds() -> int:
+    """WORKER_MAX_TOOL_ROUNDS (default 4): tool-calling rounds a worker gets before it must summarize."""
+    rounds = int(os.environ.get("WORKER_MAX_TOOL_ROUNDS", "4"))
+    if rounds < 1:
+        raise RuntimeError(f"WORKER_MAX_TOOL_ROUNDS must be at least 1, got {rounds}.")
+    return rounds
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Read settings from the environment; raise if a required variable is missing."""

@@ -226,7 +226,9 @@ On a provider error (timeout, 429, 5xx, auth failure) the call retries once on t
 - **Augmentation**: `rag/format.py` renders each chunk as `[chunk_id] (title, §section,
   p.N)\n<text>`. The prompt template lives in `prompts/` and requires a `[chunk_id]` on
   every corpus-derived claim.
-- **Citations**: web results are cited as `[web:N]` with their URL. `rag/citations.py`
+- **Citations**: web results are cited as `[web:<8 hex>]`, e.g. `[web:1a2b3c4d]`: `web:` plus the
+  first 8 hex chars of sha1(normalized URL), so the same source keeps the same ID across searches.
+  `mcp_client.py` adds this `source_id` to every Tavily result. `rag/citations.py`
   checks every cited ID against `retrieved_chunk_ids` for this turn. Valid IDs go out in
   the `citations` SSE event with `arxiv.org/abs/<id>` links. Unknown IDs are reported as
   `invalid` and shown as unverified in the UI.
@@ -295,7 +297,7 @@ Do not violate them to "make tests pass."
    emits a `RoutingDecision` with a reason. No direct model construction outside
    `llm.py`. The canonical query set must exercise both fast and strong tiers.
 6. **Citations only from retrieval.** The model may cite only chunk IDs returned by
-   `search_corpus`/`get_chunks` this turn, or `[web:N]` sources returned by Tavily this
+   `search_corpus`/`get_chunks` this turn, or `[web:<8 hex>]` sources returned by Tavily this
    turn. `rag/citations.py` enforces this. Never fabricate a citation to look grounded.
 7. **Never crash.** Each of these produces a graceful answer, a complete SSE stream ending
    in `done`, and HTTP 200, never a 500 or a hung stream:

@@ -24,8 +24,7 @@ class AgentSpec:
 AGENTS: dict[str, AgentSpec] = {
     "research": AgentSpec(
         name="research",
-        description="Answers questions about how methods work, grounded in the paper corpus (semantic search over "
-        "paper text), plus live web search for recent or out-of-corpus work.",
+        description="Answers technical questions from the 3D vision paper corpus and the live web, with citations",
         prompt_file=PROMPTS_DIR / "research.md",
         tools=frozenset({"search_corpus", "get_paper_metadata", "tavily_search"}),
         default_tier="fast",
@@ -48,7 +47,7 @@ AGENTS: dict[str, AgentSpec] = {
     ),
 }
 
-WORKERS: dict[str, AgentSpec] = {}
+WORKERS: dict[str, AgentSpec] = {name: AGENTS[name] for name in ("research",)}
 
 
 def available_workers() -> list[str]:

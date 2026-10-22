@@ -70,12 +70,14 @@ def inputs(question: str = "What's a point cloud?") -> dict:
 
 
 async def run(graph, question: str = "What's a point cloud?") -> tuple[dict, list[dict]]:
-    """Run the graph streaming custom events; return the final state and the trace events."""
+    """Run the graph streaming custom events (subgraphs included); return the final state and the trace events."""
     traces, final = [], {}
-    async for mode, payload in graph.astream(inputs(question), config=DEFAULT_CONFIG, stream_mode=["custom", "values"]):
+    async for namespace, mode, payload in graph.astream(
+        inputs(question), config=DEFAULT_CONFIG, stream_mode=["custom", "values"], subgraphs=True
+    ):
         if mode == "custom":
             traces.append(payload)
-        else:
+        elif not namespace:  # the root graph's state, not a worker subgraph's
             final = payload
     return final, traces
 
@@ -84,9 +86,9 @@ def entered(traces: list[dict]) -> list[str]:
     return [t["node"] for t in traces if t["kind"] == "enter"]
 
 
-async def test_empty_registry_general_question_goes_straight_to_synthesize():
+async def test_no_workers_general_question_goes_straight_to_synthesize():
     supervisor = ScriptedSupervisor([decision("synthesize")])
-    graph = build_graph(supervisor_llm=supervisor, synthesize_llm=answer_llm())
+    graph = build_graph(workers={}, supervisor_llm=supervisor, synthesize_llm=answer_llm())
     final, traces = await run(graph)
     assert entered(traces) == ["supervisor", "synthesize"]
     assert final["messages"][-1].text == ANSWER
@@ -145,7 +147,7 @@ async def test_unregistered_worker_is_unavailable_and_graph_completes():
     None,  # a provider that returns nothing
 ])
 async def test_bad_structured_output_is_a_parse_error_and_graph_completes(bad):
-    graph = build_graph(supervisor_llm=ScriptedSupervisor([bad]), synthesize_llm=answer_llm())
+    graph = build_graph(workers={}, supervisor_llm=ScriptedSupervisor([bad]), synthesize_llm=answer_llm())
     final, traces = await run(graph)
     assert [e.kind for e in final["errors"]] == ["supervisor_parse_error"]
     assert final["next"] == "synthesize" and final["messages"][-1].text == ANSWER
@@ -166,7 +168,7 @@ async def test_every_node_that_ran_has_enter_and_exit_traces():
 
 async def test_streamed_answer_tokens_come_only_from_synthesize():
     supervisor = StreamingJsonSupervisor(messages=iter([AIMessage(decision("synthesize").model_dump_json())]))
-    graph = build_graph(supervisor_llm=supervisor, synthesize_llm=answer_llm())
+    graph = build_graph(workers={}, supervisor_llm=supervisor, synthesize_llm=answer_llm())
     chunks = []
     async for chunk, metadata in graph.astream(inputs(), config=DEFAULT_CONFIG, stream_mode="messages"):
         chunks.append((metadata["langgraph_node"], metadata.get("tags", []), chunk.text))
@@ -180,6 +182,6 @@ async def test_streamed_answer_tokens_come_only_from_synthesize():
 
 async def test_emit_trace_is_a_no_op_outside_a_streaming_context():
     emit_trace("supervisor", "enter", step=1)  # no runnable context at all
-    graph = build_graph(supervisor_llm=ScriptedSupervisor([decision("synthesize")]), synthesize_llm=answer_llm())
+    graph = build_graph(workers={}, supervisor_llm=ScriptedSupervisor([decision("synthesize")]), synthesize_llm=answer_llm())
     final = await graph.ainvoke(inputs(), config=DEFAULT_CONFIG)  # a run that doesn't stream "custom"
     assert final["messages"][-1].text == ANSWER

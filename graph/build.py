@@ -7,20 +7,21 @@ a checkpointer: conversation history is the only cross-request state (Firestore,
 """
 
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 
 from langchain_core.language_models import BaseChatModel
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from agents.registry import available_workers
+from agents.registry import WORKERS, available_workers
 from config import max_supervisor_steps
 from graph.state import OrchestratorState
 from graph.supervisor import make_supervisor
 from graph.synthesize import make_synthesize
 from graph.trace import emit_trace
-
-WorkerNode = Callable[[OrchestratorState], Awaitable[dict]]
+from graph.workers import WorkerNode, make_worker
+from llm import get_llm
+from mcp_client import MCPTools
 
 # Each supervisor decision is at most two graph steps (supervisor, then a worker), plus synthesize.
 DEFAULT_CONFIG = {"recursion_limit": 2 * max_supervisor_steps() + 4}
@@ -44,16 +45,22 @@ def build_graph(
     workers: Mapping[str, WorkerNode] | None = None,
     supervisor_llm: BaseChatModel | None = None,
     synthesize_llm: BaseChatModel | None = None,
+    mcp: MCPTools | None = None,
 ) -> CompiledStateGraph:
     """Compile the orchestration graph. Dependencies are injectable so tests can pass fakes.
 
-    `workers` maps a worker name to its node function. By default it comes from the registry, which
-    has no workers yet, so the default graph is supervisor -> synthesize -> END.
+    `workers` maps a worker name to its node function. By default a worker is built for every agent in
+    the registry's WORKERS, with its allowlisted tools from `mcp` (a started MCPTools) and its
+    default-tier model.
     """
     if workers is None:
-        if available_workers():
-            raise ValueError(f"registry lists workers {available_workers()} but no worker nodes were given")
-        workers = {}
+        if mcp is None:
+            raise ValueError("build_graph needs a started MCPTools (mcp=...) to build the registry's workers")
+        workers = {
+            name: make_worker(WORKERS[name], mcp.tools_for(name), get_llm(WORKERS[name].default_tier),
+                              unavailable_notes=mcp.unavailable_notes(name))
+            for name in available_workers()
+        }
 
     graph = StateGraph(OrchestratorState)
     graph.add_node("supervisor", make_supervisor(supervisor_llm, list(workers)))
