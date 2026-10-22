@@ -5,9 +5,16 @@ its own task so that a server that fails to start, crashes or disconnects never 
 others. Tools are discovered once per session and exposed only if the manifest's "tools" list
 names them; agents then receive only the tools in their allowlist in agents/registry.py.
 
-Every tool call goes through an interceptor that sends it on the server's current session. If
-the server is down, the call returns the manifest's "description" as a tool error instead of
-raising, and a server that was up and then disconnected is restarted on a later call.
+Every tool call goes through an interceptor that sends it on the server's current session, with
+a TOOL_TIMEOUT_S limit; a timeout comes back as a clean tool error. A session that dies mid-call
+(closed stream, broken pipe, process exit) also comes back as a tool error, and the server is
+marked unhealthy. Calls to an unhealthy server return its manifest "description" immediately, and
+the same description goes into affected agents' prompts.
+
+Reconnects happen between turns: refresh(), called at the start of each turn, retries unhealthy
+servers in the background. The first retry after a crash or a failed startup happens on the next
+turn; after a failed start or reconnect, the server waits MCP_RECONNECT_BACKOFF_S. Health changes
+are logged at WARNING.
 
 Tavily results are reshaped before the model sees them: each result gets a deterministic
 source_id ("web:" + 8 hex chars of the URL's sha1), so [web:...] citations stay stable across
@@ -41,11 +48,10 @@ from mcp.shared.exceptions import McpError
 from mcp.types import CallToolResult, TextContent
 
 from agents.registry import AGENTS
+from config import mcp_reconnect_backoff_s, tool_timeout_s
 
 ROOT = Path(__file__).resolve().parent
 START_TIMEOUT_S = 30.0
-CALL_TIMEOUT_S = 60.0
-RESTART_COOLDOWN_S = 30.0
 MAX_RESULT_CHARS = 100_000  # longer tool output is cut before it reaches a model
 SECRET_ENV_VARS = ("TAVILY_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY")
 TAVILY_TOOLS = {"tavily_search", "tavily_extract"}
@@ -105,8 +111,7 @@ class ServerStatus:
     tools: frozenset[str]
     state: Literal["starting", "up", "down"] = "starting"
     error: str | None = None
-    was_up: bool = False
-    last_attempt: float = 0.0
+    retry_at: float = 0.0  # monotonic time from which refresh() may try to reconnect
 
 
 def load_manifests(path: str | Path | None = None) -> dict[str, dict]:
@@ -127,7 +132,7 @@ def _expand(value: str) -> str:
 
 def build_connection(manifest: dict) -> dict:
     """Turn one manifest into a langchain-mcp-adapters connection dict."""
-    session_kwargs = {"read_timeout_seconds": timedelta(seconds=CALL_TIMEOUT_S)}
+    session_kwargs = {"read_timeout_seconds": timedelta(seconds=tool_timeout_s())}
     if manifest["transport"] == "stdio":
         # "python" means this interpreter, so servers run in the same venv as the app.
         command = sys.executable if manifest["command"] == "python" else manifest["command"]
@@ -246,8 +251,8 @@ class MCPTools:
         self._tools: dict[str, BaseTool] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._stop = asyncio.Event()
-        self._restart_locks = {name: asyncio.Lock() for name in self.manifests}
         self._background: set[asyncio.Task] = set()
+        self._missing: dict[str, frozenset[str]] = {}  # per agent, last logged set of missing tools
 
     async def start(self) -> None:
         """Connect to every server concurrently. Failures are recorded in status, never raised."""
@@ -256,9 +261,19 @@ class MCPTools:
         down = {n: s.error for n, s in self.status.items() if s.state == "down"}
         logger.info("MCP servers up: %s; down: %s; tools: %s", up, down or "none", sorted(self._tools))
 
-    async def _connect(self, name: str) -> None:
+    async def _connect(self, name: str, reconnect: bool = False) -> None:
         status = self.status[name]
-        status.state, status.error, status.last_attempt = "starting", None, time.monotonic()
+        status.state, status.error = "starting", None
+        await self._open(name)
+        if status.state != "up":
+            # A failed start or reconnect waits out the backoff; a server that crashed after being
+            # up (see _call and _serve) is retried on the very next turn.
+            status.retry_at = time.monotonic() + mcp_reconnect_backoff_s()
+        elif reconnect:
+            logger.warning("MCP server %r reconnected", name)
+
+    async def _open(self, name: str) -> None:
+        status = self.status[name]
         try:
             connection = build_connection(self.manifests[name])
         except (KeyError, ValueError) as exc:
@@ -272,8 +287,7 @@ class MCPTools:
             self._tasks[name].cancel()
             self._mark_down(name, f"did not start within {START_TIMEOUT_S:.0f} s")
             return
-        except Exception as exc:  # the server failed to start; _serve has marked it down
-            logger.warning("MCP server %r failed to start: %s", name, redact(f"{type(exc).__name__}: {exc}"))
+        except Exception:  # the server failed to start; _serve has marked it down and logged why
             return
         exposed = {t.name: t for t in tools if t.name in status.tools}
         missing = status.tools - exposed.keys()
@@ -286,7 +300,7 @@ class MCPTools:
         for tool in exposed.values():
             tool.metadata = {**(tool.metadata or {}), "server": name}
         self._tools.update(exposed)
-        status.state, status.was_up = "up", True
+        status.state = "up"
 
     async def _serve(self, name: str, connection: dict, ready: asyncio.Future) -> None:
         """Own one server's session for its whole life, so it is opened and closed in the same task."""
@@ -306,6 +320,8 @@ class MCPTools:
             self._mark_down(name, f"{type(exc).__name__}: {exc}")
             if not ready.done():
                 ready.set_exception(exc)
+            else:  # it was up and then died (e.g. the process exited): retry on the next turn
+                self.status[name].retry_at = time.monotonic()
         finally:
             # A restart may already have stored a newer session under this name; leave that one alone.
             if session is not None and self._sessions.get(name) is session:
@@ -313,60 +329,62 @@ class MCPTools:
 
     def _mark_down(self, name: str, reason: str) -> None:
         status = self.status[name]
+        if status.state != "down":
+            logger.warning("MCP server %r is unhealthy: %s", name, redact(reason))
         status.state, status.error = "down", redact(reason)
         self._sessions.pop(name, None)
-        logger.warning("MCP server %r is down: %s", name, status.error)
 
     def refresh(self) -> None:
-        """Retry, in the background, every server that is down and past its cooldown.
+        """Start a reconnect, in the background, for every unhealthy server whose backoff has passed.
 
-        Call once per request: a server that failed at startup (e.g. Tavily during a network blip
-        on a cold start) then comes back without waiting for the instance to be replaced.
+        Call once at the start of each turn. The turn doesn't wait: until the server is back, its
+        tools keep returning its "unavailable" description.
         """
+        now = time.monotonic()
         for name, status in self.status.items():
-            if status.state == "down" and time.monotonic() - status.last_attempt >= RESTART_COOLDOWN_S:
-                task = asyncio.create_task(self._restart(name))
+            if status.state == "down" and now >= status.retry_at:
+                status.state = "starting"
+                logger.warning("MCP server %r is unhealthy; trying to reconnect", name)
+                task = asyncio.create_task(self._reconnect(name), name=f"mcp-reconnect:{name}")
                 self._background.add(task)
                 task.add_done_callback(self._background.discard)
 
-    async def _restart(self, name: str) -> None:
-        async with self._restart_locks[name]:
-            status = self.status[name]
-            if status.state == "up" or time.monotonic() - status.last_attempt < RESTART_COOLDOWN_S:
-                return
-            logger.info("restarting MCP server %r", name)
-            old = self._tasks.pop(name, None)
-            if old:
-                old.cancel()  # closes the dead session in the task that opened it
-            await self._connect(name)
+    async def _reconnect(self, name: str) -> None:
+        old = self._tasks.pop(name, None)
+        if old:
+            old.cancel()  # closes the dead session in the task that opened it
+        await self._connect(name, reconnect=True)
 
     async def _call(self, request: MCPToolCallRequest, _handler) -> CallToolResult:
         """Interceptor for every tool call: route to the server's current session, never raise."""
         name, status = request.server_name, self.status[request.server_name]
-        if status.was_up and status.state != "up":
-            await self._restart(name)  # also waits out a restart another call already started
         session = self._sessions.get(name)
-        if session is None:
+        if status.state != "up" or session is None:
             return _error_result(status.description)
+        timeout = tool_timeout_s()
         try:
-            result = await session.call_tool(request.name, request.args)
+            result = await session.call_tool(request.name, request.args, read_timeout_seconds=timedelta(seconds=timeout))
             if request.name in TAVILY_TOOLS:
                 result = _normalize_tavily_result(request.name, result)
             return _cap(result)
         except McpError as exc:
             if exc.error.code == REQUEST_TIMEOUT_CODE:
-                return _error_result(f"{request.name} timed out after {CALL_TIMEOUT_S:.0f} s; try a narrower request.")
+                return _error_result(f"{request.name} timed out after {timeout:g} s; try a narrower request.")
             self._mark_down(name, f"{type(exc).__name__}: {exc}")
         except Exception as exc:  # transport failure: the server crashed or the connection dropped
             self._mark_down(name, f"{type(exc).__name__}: {exc}")
+        status.retry_at = time.monotonic()  # it was healthy until now: retry on the next turn
         return _error_result(status.description)
 
     def tools_for(self, agent: str) -> list[BaseTool]:
-        """The agent's allowlisted tools that were discovered, sorted by name. Missing ones are logged."""
+        """The agent's allowlisted tools that were discovered, sorted by name. Missing ones are logged when
+        that set changes (this runs at the start of every worker run)."""
         allowed = AGENTS[agent].tools
-        missing = allowed - self._tools.keys()
-        if missing:
-            logger.warning("agent %r is missing allowlisted tools %s", agent, sorted(missing))
+        missing = frozenset(allowed - self._tools.keys())
+        if missing != self._missing.get(agent, frozenset()):
+            if missing:
+                logger.warning("agent %r is missing allowlisted tools %s", agent, sorted(missing))
+            self._missing[agent] = missing
         return [self._tools[n] for n in sorted(allowed & self._tools.keys())]
 
     def unavailable_notes(self, agent: str) -> list[str]:

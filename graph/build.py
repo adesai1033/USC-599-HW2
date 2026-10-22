@@ -8,6 +8,7 @@ a checkpointer: conversation history is the only cross-request state (Firestore,
 
 import time
 from collections.abc import Mapping
+from functools import partial
 
 from langchain_core.language_models import BaseChatModel
 from langgraph.graph import END, START, StateGraph
@@ -15,6 +16,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from agents.registry import WORKERS, available_workers
 from config import max_supervisor_steps
+from graph.guard import guarded
 from graph.state import OrchestratorState
 from graph.supervisor import make_supervisor
 from graph.synthesize import make_synthesize
@@ -51,15 +53,18 @@ def build_graph(
 
     `workers` maps a worker name to its node function. By default a worker is built for every agent in
     the registry's WORKERS, with its allowlisted tools from `mcp` (a started MCPTools) and its
-    default-tier model.
+    default-tier model. Tools and "unavailable" notes are read from `mcp` at the start of each run, so
+    server health changes reach the next run. Every worker node is wrapped by guarded(): a failure
+    becomes an AgentError and the graph returns to the supervisor.
     """
     if workers is None:
         if mcp is None:
             raise ValueError("build_graph needs a started MCPTools (mcp=...) to build the registry's workers")
         # Low thinking halved the research worker's time (27 s -> 13 s) and still found the same papers.
         workers = {
-            name: make_worker(WORKERS[name], mcp.tools_for(name), get_llm(WORKERS[name].default_tier, thinking_level="low"),
-                              unavailable_notes=mcp.unavailable_notes(name))
+            name: make_worker(WORKERS[name], partial(mcp.tools_for, name),
+                              get_llm(WORKERS[name].default_tier, thinking_level="low"),
+                              unavailable_notes=partial(mcp.unavailable_notes, name))
             for name in available_workers()
         }
 
@@ -67,7 +72,7 @@ def build_graph(
     graph.add_node("supervisor", make_supervisor(supervisor_llm, list(workers)))
     graph.add_node("synthesize", make_synthesize(synthesize_llm))
     for name, worker in workers.items():
-        graph.add_node(name, _traced(name, worker))
+        graph.add_node(name, _traced(name, guarded(name, worker)))
         graph.add_edge(name, "supervisor")
 
     graph.add_edge(START, "supervisor")

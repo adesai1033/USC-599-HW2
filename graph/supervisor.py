@@ -2,10 +2,15 @@
 
 Guards run after the model returns, in this order; the first that fires sets next="synthesize",
 records an AgentError and emits an error trace event:
-  a. the structured output failed or did not validate  -> supervisor_parse_error
-  b. step >= MAX_SUPERVISOR_STEPS                       -> step_limit
-  c. the chosen worker is not available                 -> worker_unavailable
-  d. same worker and instruction as the last dispatch   -> repeated_dispatch
+  a. the model call raised                                    -> supervisor_error
+     the structured output failed or did not validate         -> supervisor_parse_error
+  b. step >= MAX_SUPERVISOR_STEPS                             -> step_limit
+  c. the chosen worker is not available                       -> worker_unavailable
+  d. the chosen worker already failed this turn, and either it
+     has used its MAX_WORKER_RETRIES or the instruction repeats
+     one it already got                                       -> retry_limit
+  e. same worker and instruction as the last dispatch         -> repeated_dispatch
+Before calling the model at all: if every worker has failed past its retries, go to synthesize.
 """
 
 import logging
@@ -17,7 +22,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.registry import AGENTS, PROMPTS_DIR
-from config import max_supervisor_steps
+from config import max_supervisor_steps, max_worker_retries
 from graph.state import AgentError, Dispatch, OrchestratorState, SupervisorDecision
 from graph.trace import emit_trace
 from llm import get_llm
@@ -25,6 +30,21 @@ from llm import get_llm
 logger = logging.getLogger("graph.supervisor")
 
 FINDING_PREVIEW_CHARS = 600
+FAILURE_KINDS = {"worker_timeout", "transport", "provider_error", "worker_exception"}  # from graph/guard.py
+ERROR_SUMMARY = {
+    "worker_timeout": "ran too long and was stopped",
+    "transport": "lost its connection to a tool server",
+    "provider_error": "its language model provider returned an error",
+    "worker_exception": "failed unexpectedly",
+    "worker_unavailable": "is not available",
+    "invalid_citation": "cited sources it never retrieved; marked [unverified]",
+    "attribution_mismatch": "cited a source about a different paper",
+    "retry_limit": "will not be retried again this turn",
+    "repeated_dispatch": "the same request was already sent",
+    "step_limit": "step limit reached",
+    "supervisor_parse_error": "a decision could not be read",
+    "supervisor_error": "the decision model call failed",
+}
 
 
 def latest_question(state: OrchestratorState) -> str:
@@ -60,8 +80,30 @@ def _context(state: OrchestratorState, step: int, max_steps: int) -> str:
         f"- from {f.agent}: {f.content[:FINDING_PREVIEW_CHARS]}{'...' if len(f.content) > FINDING_PREVIEW_CHARS else ''}"
         for f in findings
     ) or "(none)"))
-    parts.append("Errors so far:\n" + ("\n".join(f"- {e.agent} ({e.kind}): {e.message}" for e in errors) or "(none)"))
+    parts.append("Errors so far:\n" + (_error_summary(state) or "(none)"))
     return "\n\n".join(parts)
+
+
+def _failures(state: OrchestratorState) -> dict[str, int]:
+    """How many times each worker failed (guard errors) this turn."""
+    counts: dict[str, int] = {}
+    for error in state.get("errors", []):
+        if error.kind in FAILURE_KINDS:
+            counts[error.agent] = counts.get(error.agent, 0) + 1
+    return counts
+
+
+def _error_summary(state: OrchestratorState) -> str:
+    """One compact line per error, e.g. "- research failed: transport (lost its connection to a tool server)"."""
+    failures, retries = _failures(state), max_worker_retries()
+    lines = []
+    for e in state.get("errors", []):
+        verb = "failed" if e.kind in FAILURE_KINDS else "-"
+        line = f"- {e.agent} {verb}: {e.kind} ({ERROR_SUMMARY.get(e.kind, 'see errors')})"
+        if e.kind in FAILURE_KINDS:
+            line += f"; retries left: {max(0, retries + 1 - failures[e.agent])}"
+        lines.append(line)
+    return "\n".join(dict.fromkeys(lines))
 
 
 def _unavailable_message(worker: str) -> str:
@@ -85,14 +127,24 @@ def make_supervisor(
         start = time.perf_counter()
         emit_trace("supervisor", "enter", step=step)
 
+        failures, retries = _failures(state), max_worker_retries()
+        if worker_names and all(failures.get(w, 0) > retries for w in worker_names):
+            # Nothing left to dispatch: skip the model call.
+            emit_trace("supervisor", "decision", step=step, detail="synthesize: every worker failed past its retries")
+            emit_trace("supervisor", "exit", step=step, detail="next=synthesize", ms=round((time.perf_counter() - start) * 1000))
+            return {"step": step, "next": "synthesize", "instruction": "", "task_type": state.get("task_type") or "general"}
+
         decision: SupervisorDecision | None = None
-        failure = ""
+        failure_kind, failure = "", ""
         try:
             raw = await decider.ainvoke([SystemMessage(system_prompt), HumanMessage(_context(state, step, max_steps))])
             decision = raw if isinstance(raw, SupervisorDecision) else SupervisorDecision.model_validate(raw)
-        except Exception as exc:  # provider error, unparseable JSON or a schema violation
-            failure = f"{type(exc).__name__}: {str(exc)[:200]}"
-            logger.warning("supervisor structured output failed: %s", failure)
+        except ValueError as exc:  # OutputParserException and pydantic's ValidationError: unreadable output
+            failure_kind, failure = "supervisor_parse_error", type(exc).__name__
+            logger.warning("supervisor structured output could not be read: %s", type(exc).__name__)
+        except Exception as exc:  # the model call itself failed: provider error, timeout, network
+            failure_kind, failure = "supervisor_error", type(exc).__name__
+            logger.exception("supervisor model call failed")
 
         if decision is not None:
             emit_trace("supervisor", "decision", step=step,
@@ -100,8 +152,9 @@ def make_supervisor(
 
         error: AgentError | None = None
         if decision is None:
-            error = AgentError(agent="supervisor", kind="supervisor_parse_error",
-                               message=f"The supervisor's decision could not be read ({failure}).")
+            message = ("The supervisor's decision could not be read" if failure_kind == "supervisor_parse_error"
+                       else "The supervisor's model call failed")
+            error = AgentError(agent="supervisor", kind=failure_kind, message=f"{message} ({failure}).")
         elif decision.next != "synthesize":
             dispatches = state.get("dispatches", [])
             if step >= max_steps:
@@ -109,6 +162,14 @@ def make_supervisor(
                                    message=f"Reached the limit of {max_steps} supervisor steps; answering with what was gathered.")
             elif decision.next not in worker_names:
                 error = AgentError(agent=decision.next, kind="worker_unavailable", message=_unavailable_message(decision.next))
+            elif failures.get(decision.next) and (
+                failures[decision.next] > retries
+                or any(d.worker == decision.next and _normalize(d.instruction) == _normalize(decision.instruction)
+                       for d in dispatches)
+            ):
+                error = AgentError(agent=decision.next, kind="retry_limit",
+                                   message=f"{decision.next} already failed this turn and was not retried "
+                                           "(retry limit reached, or the same request was already tried).")
             elif dispatches and dispatches[-1].worker == decision.next and (
                 _normalize(dispatches[-1].instruction) == _normalize(decision.instruction)
             ):

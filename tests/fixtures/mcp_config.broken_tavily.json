@@ -1,0 +1,48 @@
+{
+  "corpus": {
+    "transport": "stdio",
+    "command": "python",
+    "args": [
+      "mcp_servers/corpus.py"
+    ],
+    "env_passthrough": [
+      "OPENAI_API_KEY",
+      "OPENAI_EMBEDDING_MODEL",
+      "CHROMA_PERSIST_DIR",
+      "PAPERS_DB_PATH",
+      "RAG_CITATION_PRIOR",
+      "LOG_LEVEL"
+    ],
+    "tools": [
+      "search_corpus",
+      "get_chunks"
+    ],
+    "description": "Corpus search (semantic search over the 3D computer vision arXiv paper corpus) is currently unavailable. Say so instead of answering from memory, and offer a web search."
+  },
+  "papers_db": {
+    "transport": "stdio",
+    "command": "python",
+    "args": [
+      "mcp_servers/papers_db.py"
+    ],
+    "env_passthrough": [
+      "PAPERS_DB_PATH",
+      "LOG_LEVEL"
+    ],
+    "tools": [
+      "describe_schema",
+      "run_sql",
+      "get_paper_metadata"
+    ],
+    "description": "The paper database (paper metadata, citation counts, authors and benchmark results) is currently unavailable. Say so instead of guessing numbers."
+  },
+  "tavily": {
+    "transport": "streamable_http",
+    "url": "https://mcp.tavily.com/mcp/?tavilyApiKey=tvly-invalid-placeholder-key",
+    "tools": [
+      "tavily_search",
+      "tavily_extract"
+    ],
+    "description": "Live web search (Tavily) is currently unavailable. Say that current or web information can't be looked up right now."
+  }
+}

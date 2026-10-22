@@ -14,6 +14,73 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Phase 4c: robustness (the graph can't crash or cite unretrieved sources)
+
+**Built:**
+- **`rag/citations.py`:** `validate()` returns a `CitationReport` (`{valid, invalid}`, in order,
+  without duplicates), and `mark_unverified()` replaces invalid IDs.
+- **Worker-level validation** (`graph/workers.py`): the allowed sources are the ones this run's
+  tools returned. An invalid ID becomes `[unverified]`, plus an `invalid_citation` error and a
+  trace event. `Finding.grounded` is true only if at least one valid citation remains.
+- **Answer-level validation** (`graph/synthesize.py`): the answer's citations are checked against
+  the union of the findings' citations and stored in the new state field `answer_citations`.
+  Invalid IDs are reported, not rewritten, because the answer has already streamed.
+- **`graph/guard.py`:** `guarded()` wraps every worker node with `WORKER_TIMEOUT_S` and
+  classifies failures as `worker_timeout`, `transport`, `provider_error` or `worker_exception`.
+  - Classification follows the exception's cause chain, using `langchain_core.exceptions.ModelError`
+    for providers.
+  - Messages are fixed per kind; `CancelledError` propagates.
+- **Supervisor:**
+  - It sees a compact error summary with retries left.
+  - New `retry_limit` guard: at most `MAX_WORKER_RETRIES` retries, never with the same
+    instruction.
+  - When every worker has failed past its retries, it skips the model and goes to synthesize.
+  - A model-call failure is `supervisor_error`; unreadable output (any `ValueError`) stays
+    `supervisor_parse_error`.
+- **Synthesize:** a model failure records `synthesize_error` and ends with a fixed notice, added
+  after any tokens that already streamed.
+- **`mcp_client.py`:**
+  - Every call gets `read_timeout_seconds=TOOL_TIMEOUT_S`.
+  - A dead session gives a clean tool error and marks the server unhealthy. Calls to an
+    unhealthy server fail immediately with its description, which also goes into the affected
+    worker's prompt; tools and notes are now read at the start of every worker run.
+  - `refresh()` at the start of each turn reconnects in the background. A crashed server is
+    retried on the next turn; a failed start or reconnect waits `MCP_RECONNECT_BACKOFF_S`.
+  - Health changes are logged at WARNING, and the "missing allowlisted tools" warning only when
+    that set changes.
+  - The old reconnect-on-call behavior is gone.
+- **CLI:** `--mcp-config`, MCP health lines at startup, errors grouped by kind, `answer_citations`
+  as the numbered list, an UNVERIFIED CITATIONS line, and any failure notice the stream didn't
+  carry.
+- **Probe fixtures:** `tests/fixtures/mcp_config.broken_corpus.json` and `broken_tavily.json`.
+
+**Verified:**
+- `pytest tests/` gives 106 passed, 2 skipped. There are 20 new tests in
+  `tests/test_robustness.py`, and the Phase 3/4b tests changed for the new behavior: reconnect
+  happens on `refresh()`, not on a call, and unretrieved IDs become `[unverified]`.
+- Live probes:
+  - **Broken corpus:** the corpus server fails discovery, research has no `search_corpus`, and
+    the answer says the corpus is unavailable and uses web sources, with no chunk citations.
+  - **Broken Tavily:** the session works but every search returns
+    `tavily_search failed: Unauthorized...`; the answer says web search failed.
+  - **Corpus server killed mid-REPL** (`pgrep -f mcp_servers/corpus.py`): that turn's
+    `search_corpus` returned the unavailable error within 3 ms and the worker used the web. The
+    next turn logged "trying to reconnect" and "reconnected", and corpus search worked again.
+  - **9999.99999:** "not in the corpus", the worker searched the web itself, and no invented
+    citations.
+  - **The 4b questions** all show an empty UNVERIFIED CITATIONS line.
+
+**Seen in the runs:**
+- **Worker cited an unretrieved source:** in "this month", after the tool-round cap, the worker
+  cited `web:ebdd62a3`, which no tool returned. It became `[unverified]`, and synthesize left that
+  claim out.
+- **No invalid citations in final answers:** none appeared in any final answer.
+- **Wrong corpus date range:** the broken-Tavily answer claimed the corpus "only covers literature
+  through mid-2024". That's false (it covers 2020 to March 2026) and is the model's invention.
+- **Extra dispatch during a reconnect:** on the turn where the corpus server is reconnecting, the
+  first research run still sees it as unavailable, and the supervisor dispatches research again.
+  That costs about 4 s once.
+
 ### 2026-10-22 — Faster comparison answers (synthesize length and thinking)
 
 **Instrumented first:** synthesize's `exit` trace now reports time to first token, word count and

@@ -1,5 +1,6 @@
 """Test-only stdio MCP server. Stands in for corpus and tavily, plus tools to probe failure handling."""
 
+import asyncio
 import os
 
 from mcp.server.fastmcp import FastMCP
@@ -35,6 +36,13 @@ def tavily_extract(urls: list[str]) -> str:
 def echo(text: str) -> str:
     """Return text unchanged."""
     return text
+
+
+@mcp.tool()
+async def sleep(seconds: float) -> str:
+    """Wait, then answer: for tool-timeout tests."""
+    await asyncio.sleep(seconds)
+    return "awake"
 
 
 @mcp.tool()

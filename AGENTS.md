@@ -85,6 +85,15 @@ Server manifests live in `mcp_config.json`, whose path is passed via `MCP_SERVER
 Per-agent filtering of discovered tools happens in `mcp_client.py` using
 `agents/registry.py`.
 
+Each tool call has a `TOOL_TIMEOUT_S` limit (default 30); a timeout is a clean tool error. A
+session that dies mid-call returns a clean tool error and marks the server unhealthy. Calls to
+an unhealthy server return its `description` immediately, and the description is added to the
+affected agents' prompts. `MCPTools.refresh()`, called at the start of each turn, tries one
+reconnect per unhealthy server in the background: a server that crashed after being up is
+retried on the next turn; after a failed start or reconnect it waits `MCP_RECONNECT_BACKOFF_S`
+(default 30). Health changes are logged at WARNING. Probe configs:
+`tests/fixtures/mcp_config.broken_corpus.json` and `mcp_config.broken_tavily.json`.
+
 ## Repository layout
 
 ```
@@ -94,7 +103,8 @@ graph/
   state.py           OrchestratorState + Finding / Citation / RoutingDecision / AgentError models
   supervisor.py      supervisor node (structured output → SupervisorDecision)
   trace.py           emit_trace(): trace events through LangGraph's custom stream writer
-  workers.py         worker subgraph factory: agent ⇄ ToolNode loop, failure capture wrapper
+  workers.py         worker subgraph factory: agent ⇄ ToolNode loop, worker-level citation validation
+  guard.py           guarded(): worker failure wrapper (timeout, exception → classified AgentError)
   synthesize.py      final answer node: streams tokens, validates citations
   build.py           assembles the StateGraph, conditional edges, recursion limit
 agents/
@@ -167,9 +177,17 @@ START → load_history → supervisor ─┬─► research ─┐
   handle_tool_errors=True) ──► worker_agent`. The loop-back is load-bearing. The worker
   ends by writing a `Finding` (content plus citations) to state and returning to
   `supervisor`.
-- Workers are wrapped so that an exception becomes an `AgentError` in state, not a crashed
-  graph. The supervisor sees the error and either tries another worker or proceeds to
-  `synthesize` with partial findings.
+- Workers are wrapped by `graph/guard.py:guarded()` so that an exception or a run past
+  `WORKER_TIMEOUT_S` (default 60) becomes an `AgentError` (`worker_timeout`, `transport`,
+  `provider_error` or `worker_exception`, with a fixed user-safe message), not a crashed graph.
+  `CancelledError` is never caught. The supervisor sees a compact error summary and either
+  retries the worker (at most `MAX_WORKER_RETRIES`, default 1, never with the same instruction;
+  otherwise `retry_limit`), tries another worker, or proceeds to `synthesize` with partial
+  findings. If every worker has failed past its retries, it goes straight to `synthesize`.
+- The supervisor's own model call failing is `supervisor_error`; unreadable output is
+  `supervisor_parse_error`. Either goes to `synthesize`. A synthesize model failure records
+  `synthesize_error` and ends with a fixed notice (after any tokens already streamed), so the
+  graph always reaches `END` with a final `AIMessage`.
 - `synthesize` streams the final answer. Its tier is chosen by `router.py` from the
   findings.
 - Hard bounds: `MAX_SUPERVISOR_STEPS` (default 6) checked in the supervisor, plus the
@@ -186,12 +204,17 @@ class OrchestratorState(TypedDict):
     instruction: str
     task_type: str
     step: int
-    findings: Annotated[list[Finding], operator.add]     # agent, content, citations
+    findings: Annotated[list[Finding], operator.add]     # agent, content, citations, grounded
     retrieved_chunk_ids: Annotated[list[str], operator.add]
     routing: Annotated[list[RoutingDecision], operator.add]
     errors: Annotated[list[AgentError], operator.add]
     dispatches: Annotated[list[Dispatch], operator.add]  # worker + instruction, in order
+    answer_citations: CitationReport                     # the final answer's citations, validated
 ```
+
+`Finding.grounded` is true only if at least one of its citations survived validation.
+`CitationReport = {valid: list[Citation], invalid: list[str]}`; Phase 6 sends it as the
+`citations` SSE event.
 
 ## LLM routing
 
@@ -305,6 +328,11 @@ Do not violate them to "make tests pass."
 6. **Citations only from retrieval.** The model may cite only chunk IDs returned by
    `search_corpus`/`get_chunks` this turn, or `[web:<8 hex>]` sources returned by Tavily this
    turn. `rag/citations.py` enforces this. Never fabricate a citation to look grounded.
+   Validation runs at two levels: in each worker, against the sources its tools returned in
+   that run (an invalid ID becomes `[unverified]` in the finding and an `invalid_citation`
+   error), and on the final answer, against the union of the findings' citations (stored in
+   `answer_citations`; the answer has already streamed, so invalid IDs are reported, not
+   rewritten).
 7. **Never crash.** Each of these produces a graceful answer, a complete SSE stream ending
    in `done`, and HTTP 200, never a 500 or a hung stream:
    - MCP transport failure: a server won't start or disconnects mid-call. Its

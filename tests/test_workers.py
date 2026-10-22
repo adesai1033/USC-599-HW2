@@ -117,8 +117,8 @@ async def test_citations_carry_metadata_from_tool_results():
         "corpus", "NeRF", "method", 3, "https://arxiv.org/abs/2003.08934")
     web = citations[WEB_ID]
     assert (web.source, web.title, web.url) == ("web", "New 3DGS paper", WEB_URL)
-    unknown = citations["2308.04079#intro-09"]  # cited but never retrieved: kept for the 4c validator
-    assert unknown.title is None and unknown.url == "https://arxiv.org/abs/2308.04079"
+    # Cited but never retrieved: dropped from the citations and marked in the text (see test_robustness).
+    assert "2308.04079#intro-09" not in citations and "Also [unverified]." in out["findings"][0].content
 
 
 @pytest.mark.asyncio

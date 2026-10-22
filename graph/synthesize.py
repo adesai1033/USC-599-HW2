@@ -1,4 +1,10 @@
-"""Final answer node: streams the answer from the findings, tagged "synthesize" for token consumers."""
+"""Final answer node: streams the answer from the findings, tagged "synthesize" for token consumers.
+
+After streaming, the answer's citations are validated against the union of the findings' citations
+and stored in answer_citations. The tokens have already gone out, so invalid IDs are reported, not
+rewritten. If the model call fails, the final message is a fixed notice (appended to any tokens that
+already streamed), so the graph always ends with an AIMessage.
+"""
 
 import logging
 import time
@@ -13,10 +19,11 @@ from graph.state import AgentError, Finding, OrchestratorState
 from graph.supervisor import latest_question
 from graph.trace import emit_trace
 from llm import get_llm
+from rag.citations import validate
 
 logger = logging.getLogger("graph.synthesize")
 
-UNAVAILABLE_ANSWER = "Sorry, the language model is unavailable right now, so I can't write an answer. Please try again."
+ANSWER_FAILED_NOTICE = "Sorry, the answer couldn't be generated because the language model failed. Please try again."
 
 
 def _format_findings(findings: list[Finding]) -> str:
@@ -25,7 +32,8 @@ def _format_findings(findings: list[Finding]) -> str:
     blocks = []
     for i, finding in enumerate(findings, 1):
         cited = ", ".join(c.id for c in finding.citations) or "none"
-        blocks.append(f"### Finding {i} (from {finding.agent}; citations: {cited})\n{finding.content}")
+        grounded = "yes" if finding.grounded else "no (no verified citations)"
+        blocks.append(f"### Finding {i} (from {finding.agent}; grounded: {grounded}; citations: {cited})\n{finding.content}")
     return "\n\n".join(blocks)
 
 
@@ -64,11 +72,19 @@ def make_synthesize(llm: BaseChatModel | None) -> Callable[[OrchestratorState], 
                 reasoning_tokens = usage.get("output_token_details", {}).get("reasoning", reasoning_tokens)
             answer = "".join(parts)
         except Exception as exc:
-            logger.warning("synthesize failed: %s: %s", type(exc).__name__, str(exc)[:200])
-            emit_trace("synthesize", "error", step=step, detail=f"model call failed: {type(exc).__name__}")
-            answer = "".join(parts) or UNAVAILABLE_ANSWER
-            update["errors"] = [AgentError(agent="synthesize", kind="synthesize_failed",
+            logger.exception("synthesize model call failed")
+            emit_trace("synthesize", "error", step=step, detail=f"synthesize_error: {type(exc).__name__}")
+            # Keep whatever already streamed; the notice says the answer is incomplete.
+            streamed = "".join(parts).rstrip()
+            answer = f"{streamed}\n\n{ANSWER_FAILED_NOTICE}" if streamed else ANSWER_FAILED_NOTICE
+            update["errors"] = [AgentError(agent="synthesize", kind="synthesize_error",
                                            message="The language model failed while writing the answer.")]
+
+        allowed = {c.id: c for f in state.get("findings", []) for c in f.citations}
+        report = validate(answer, allowed)
+        if report.invalid:
+            emit_trace("synthesize", "error", step=step, detail=f"unverified citations in the answer: {', '.join(report.invalid)}")
+        update["answer_citations"] = report
         # The split between waiting (first token) and writing shows where synthesize's time goes.
         stats = [f"first token {first_token_ms / 1000:.1f} s" if first_token_ms is not None else "no tokens",
                  f"{len(answer.split())} words"]

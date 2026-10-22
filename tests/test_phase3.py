@@ -309,7 +309,7 @@ async def test_tool_error_is_returned_to_the_model_and_server_stays_up(papers_sq
 
 
 @pytest.mark.asyncio
-async def test_server_crash_mid_call_is_graceful_and_restarts(monkeypatch):
+async def test_server_crash_mid_call_is_graceful_and_reconnects_on_refresh():
     tools = mcp_client.MCPTools({"fake": stdio_manifest(FAKE_SERVER, ["echo", "crash"], "Fake server is unavailable.")})
     await tools.start()
     try:
@@ -317,33 +317,34 @@ async def test_server_crash_mid_call_is_graceful_and_restarts(monkeypatch):
         status, text = await call(tools._tools["crash"])
         assert status == "error" and text == "Fake server is unavailable."
         assert tools.status["fake"].state == "down"
-        # Within the cooldown the server is not restarted, and calls fail gracefully.
+        # Calls don't reconnect: until the next turn's refresh(), they fail immediately.
         assert await call(tools._tools["echo"], text="hi") == ("error", "Fake server is unavailable.")
-        # After the cooldown, the next call restarts it and the same tool object works again.
-        monkeypatch.setattr(mcp_client, "RESTART_COOLDOWN_S", 0.0)
-        assert await call(tools._tools["echo"], text="back") == ("success", "back")
+        tools.refresh()
+        await asyncio.gather(*tools._background)
         assert tools.status["fake"].state == "up"
+        assert await call(tools._tools["echo"], text="back") == ("success", "back")  # same tool object
     finally:
         await tools.aclose()
 
 
 @pytest.mark.asyncio
-async def test_concurrent_calls_after_a_crash_wait_for_one_restart(monkeypatch):
-    monkeypatch.setattr(mcp_client, "RESTART_COOLDOWN_S", 0.0)
+async def test_overlapping_refreshes_start_one_reconnect():
     tools = mcp_client.MCPTools({"fake": stdio_manifest(FAKE_SERVER, ["echo", "crash"], "Fake server is unavailable.")})
     await tools.start()
     try:
         await call(tools._tools["crash"])
-        results = await asyncio.gather(*(call(tools._tools["echo"], text=str(i)) for i in range(5)))
-        assert results == [("success", str(i)) for i in range(5)]
-        assert len(tools._tasks) == 1
+        tools.refresh()
+        tools.refresh()
+        assert len(tools._background) == 1
+        await asyncio.gather(*tools._background)
+        assert tools.status["fake"].state == "up" and len(tools._tasks) == 1
     finally:
         await tools.aclose()
 
 
 @pytest.mark.asyncio
 async def test_refresh_retries_a_server_that_never_started(monkeypatch):
-    monkeypatch.setattr(mcp_client, "RESTART_COOLDOWN_S", 0.0)
+    monkeypatch.setenv("MCP_RECONNECT_BACKOFF_S", "0")  # a failed start waits out the backoff
     manifest = {**stdio_manifest(FAKE_SERVER, ["echo"], "Fake server is unavailable."), "command": "definitely-not-a-real-command"}
     tools = mcp_client.MCPTools({"fake": manifest})
     await tools.start()

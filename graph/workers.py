@@ -6,8 +6,10 @@ worker_agent calls the model with the agent's tools bound. worker_tools runs the
 ToolNode(handle_tool_errors=True) and emits tool_call / tool_result trace events. After
 WORKER_MAX_TOOL_ROUNDS rounds, the model is called once more without tools to summarize.
 
-The parent-graph node maps the subgraph's result to a Finding (content plus citations built from
-the IDs cited in the final text) and to retrieved_chunk_ids (every chunk any tool returned).
+The parent-graph node maps the subgraph's result to a Finding and to retrieved_chunk_ids (every chunk
+any tool returned). Citations are validated against the sources this run's tools returned: an ID
+that no tool returned is replaced with [unverified] and reported as an invalid_citation error, and
+the finding is grounded only if at least one valid citation remains.
 """
 
 import json
@@ -30,7 +32,7 @@ from config import worker_max_tool_rounds
 from graph.state import AgentError, Citation, Finding, OrchestratorState
 from graph.supervisor import latest_question
 from graph.trace import emit_trace
-from rag.citations import attribution_mismatches, is_web_id, parse_citation_ids
+from rag.citations import attribution_mismatches, mark_unverified, validate
 
 WorkerNode = Callable[[OrchestratorState], Awaitable[dict]]
 
@@ -109,27 +111,21 @@ def summarize_result(message: ToolMessage) -> str:
     return f"{len(tool_text(message))} chars"
 
 
-def build_citations(cited: Iterable[str], messages: list[AnyMessage]) -> list[Citation]:
-    """Citations for the cited IDs, with metadata from this run's tool results. Unknown IDs are kept (4c validates)."""
-    chunk_meta: dict[str, dict] = {}
-    web_meta: dict[str, dict] = {}
+def allowed_citations(messages: list[AnyMessage]) -> dict[str, Citation]:
+    """Every source the tools returned in this run, as the citation it would become, keyed by ID."""
+    allowed: dict[str, Citation] = {}
     for message in messages:
-        if isinstance(message, ToolMessage):
-            chunk_meta.update({c["chunk_id"]: c for c in _chunks(message)})
-            web_meta.update({r["source_id"]: r for r in _web_results(message)})
-    citations = []
-    for cid in cited:
-        if is_web_id(cid):
-            meta = web_meta.get(cid, {})
-            citations.append(Citation(id=cid, source="web", title=meta.get("title") or None, url=meta.get("url")))
-        else:
-            arxiv_id = cid.split("#", 1)[0]
-            meta = chunk_meta.get(cid, {})
-            citations.append(Citation(
-                id=cid, source="corpus", arxiv_id=arxiv_id, title=meta.get("title"), section=meta.get("section"),
-                page=meta.get("page"), url=meta.get("url") or f"https://arxiv.org/abs/{arxiv_id}",
-            ))
-    return citations
+        if not isinstance(message, ToolMessage):
+            continue
+        for c in _chunks(message):
+            arxiv_id = c.get("arxiv_id") or c["chunk_id"].split("#", 1)[0]
+            allowed[c["chunk_id"]] = Citation(
+                id=c["chunk_id"], source="corpus", arxiv_id=arxiv_id, title=c.get("title"), section=c.get("section"),
+                page=c.get("page"), url=c.get("url") or f"https://arxiv.org/abs/{arxiv_id}",
+            )
+        for r in _web_results(message):
+            allowed[r["source_id"]] = Citation(id=r["source_id"], source="web", title=r.get("title") or None, url=r.get("url"))
+    return allowed
 
 
 def source_texts(messages: list[AnyMessage]) -> dict[str, str]:
@@ -158,53 +154,67 @@ def retrieved_chunk_ids(messages: list[AnyMessage]) -> list[str]:
     return ids
 
 
-def make_worker(spec: AgentSpec, tools: list[BaseTool], llm: BaseChatModel, *, unavailable_notes: Iterable[str] = ()) -> WorkerNode:
-    """Build the parent-graph node for one worker. `unavailable_notes` describe missing capabilities."""
-    system_prompt = spec.prompt_file.read_text()
-    notes = list(unavailable_notes)
-    if notes:
-        system_prompt += "\n\n## Unavailable right now\n\n" + "\n".join(f"- {n}" for n in notes)
-    bound = llm.bind_tools(tools) if tools else llm
-    tool_node = ToolNode(tools, handle_tool_errors=True)
+def make_worker(
+    spec: AgentSpec,
+    tools: list[BaseTool] | Callable[[], list[BaseTool]],
+    llm: BaseChatModel,
+    *,
+    unavailable_notes: Iterable[str] | Callable[[], Iterable[str]] = (),
+) -> WorkerNode:
+    """Build the parent-graph node for one worker.
 
-    async def worker_agent(state: WorkerState) -> dict:
-        messages = [SystemMessage(system_prompt), *state["messages"]]
-        max_rounds = worker_max_tool_rounds()
-        if state["rounds"] >= max_rounds:
-            emit_trace(spec.name, "decision", step=state["step"], agent=spec.name,
-                       detail=f"tool round cap ({max_rounds}) reached; summarizing without tools")
-            return {"messages": [await llm.ainvoke([*messages, HumanMessage(SUMMARIZE_NOW)])]}
-        return {"messages": [await bound.ainvoke(messages)]}
+    `tools` and `unavailable_notes` may be callables. They are then read at the start of every run, so
+    a server that went down (or came back) since the graph was built is reflected in the next run.
+    """
+    current_tools = tools if callable(tools) else (lambda: tools)
+    current_notes = unavailable_notes if callable(unavailable_notes) else (lambda: unavailable_notes)
+    base_prompt = spec.prompt_file.read_text()
 
-    async def worker_tools(state: WorkerState, config: RunnableConfig) -> dict:
-        calls = state["messages"][-1].tool_calls
-        for call in calls:
-            emit_trace(spec.name, "tool_call", step=state["step"], agent=spec.name,
-                       detail=f"{call['name']}({summarize_args(call['args'])})")
-        start = time.perf_counter()
-        update = await tool_node.ainvoke(state, config)
-        ms = round((time.perf_counter() - start) * 1000)
-        for message in update["messages"]:
-            emit_trace(spec.name, "tool_result", step=state["step"], agent=spec.name,
-                       detail=f"{message.name}: {summarize_result(message)}", ms=ms)
-        return {"messages": update["messages"], "rounds": state["rounds"] + 1}
+    def build_subgraph(run_tools: list[BaseTool], system_prompt: str):
+        bound = llm.bind_tools(run_tools) if run_tools else llm
+        tool_node = ToolNode(run_tools, handle_tool_errors=True)
 
-    graph = StateGraph(WorkerState)
-    graph.add_node("worker_agent", worker_agent)
-    graph.add_node("worker_tools", worker_tools)
-    graph.add_edge(START, "worker_agent")
-    graph.add_conditional_edges("worker_agent", tools_condition, {"tools": "worker_tools", END: END})
-    graph.add_edge("worker_tools", "worker_agent")  # the loop-back: the model sees every tool result
-    subgraph = graph.compile(name=spec.name)
+        async def worker_agent(state: WorkerState) -> dict:
+            messages = [SystemMessage(system_prompt), *state["messages"]]
+            max_rounds = worker_max_tool_rounds()
+            if state["rounds"] >= max_rounds:
+                emit_trace(spec.name, "decision", step=state["step"], agent=spec.name,
+                           detail=f"tool round cap ({max_rounds}) reached; summarizing without tools")
+                return {"messages": [await llm.ainvoke([*messages, HumanMessage(SUMMARIZE_NOW)])]}
+            return {"messages": [await bound.ainvoke(messages)]}
+
+        async def worker_tools(state: WorkerState, config: RunnableConfig) -> dict:
+            calls = state["messages"][-1].tool_calls
+            for call in calls:
+                emit_trace(spec.name, "tool_call", step=state["step"], agent=spec.name,
+                           detail=f"{call['name']}({summarize_args(call['args'])})")
+            start = time.perf_counter()
+            update = await tool_node.ainvoke(state, config)
+            ms = round((time.perf_counter() - start) * 1000)
+            for message in update["messages"]:
+                emit_trace(spec.name, "tool_result", step=state["step"], agent=spec.name,
+                           detail=f"{message.name}: {summarize_result(message)}", ms=ms)
+            return {"messages": update["messages"], "rounds": state["rounds"] + 1}
+
+        graph = StateGraph(WorkerState)
+        graph.add_node("worker_agent", worker_agent)
+        graph.add_node("worker_tools", worker_tools)
+        graph.add_edge(START, "worker_agent")
+        graph.add_conditional_edges("worker_agent", tools_condition, {"tools": "worker_tools", END: END})
+        graph.add_edge("worker_tools", "worker_agent")  # the loop-back: the model sees every tool result
+        return graph.compile(name=spec.name)
 
     async def worker(state: OrchestratorState) -> dict:
+        system_prompt = base_prompt
+        if notes := list(current_notes()):
+            system_prompt += "\n\n## Unavailable right now\n\n" + "\n".join(f"- {n}" for n in notes)
         task = (
             f"Instruction from the supervisor: {state.get('instruction', '')}\n\n"
             f"Original user question: {latest_question(state)}\n\n"
             f"Task type: {state.get('task_type') or 'general'}\n\n"
             f"Today's date: {date.today().isoformat()}"  # so "this month" means something
         )
-        result = await subgraph.ainvoke(
+        result = await build_subgraph(list(current_tools()), system_prompt).ainvoke(
             {"messages": [HumanMessage(task)], "instruction": state.get("instruction", ""), "rounds": 0,
              "step": state.get("step")},
             {"recursion_limit": 2 * worker_max_tool_rounds() + 4},
@@ -212,10 +222,10 @@ def make_worker(spec: AgentSpec, tools: list[BaseTool], llm: BaseChatModel, *, u
         messages = result["messages"]
         final = next((m for m in reversed(messages) if isinstance(m, AIMessage)), AIMessage(""))
         content = final.text
-        update: dict = {}
+        errors: list[AgentError] = []
 
         # A claim that names one paper but cites another's source is wrong even when the ID was
-        # retrieved, so the retrieval check in 4c can't catch it. Give the model one chance to fix it.
+        # retrieved, so the retrieval check below can't catch it. Give the model one chance to fix it.
         sources = source_texts(messages)
         if mismatches := attribution_mismatches(content, sources):
             emit_trace(spec.name, "error", step=state.get("step"), agent=spec.name,
@@ -227,16 +237,28 @@ def make_worker(spec: AgentSpec, tools: list[BaseTool], llm: BaseChatModel, *, u
             if mismatches := attribution_mismatches(content, sources):
                 emit_trace(spec.name, "error", step=state.get("step"), agent=spec.name,
                            detail=f"attribution check: {len(mismatches)} claim(s) still mismatched")
-                update["errors"] = [AgentError(
+                errors.append(AgentError(
                     agent=spec.name, kind="attribution_mismatch",
                     message="Some findings cite a source that doesn't mention the paper they name; don't use "
                             "those citations for those claims:\n" + _describe(mismatches),
-                )]
+                ))
 
-        return update | {
-            "findings": [Finding(agent=spec.name, content=content,
-                                 citations=build_citations(parse_citation_ids(content), messages))],
+        # Only IDs that this run's tools returned may be cited. Others become [unverified].
+        report = validate(content, allowed_citations(messages))
+        if report.invalid:
+            content = mark_unverified(content, set(report.invalid))
+            emit_trace(spec.name, "error", step=state.get("step"), agent=spec.name,
+                       detail=f"invalid citations replaced with [unverified]: {', '.join(report.invalid)}")
+            errors.append(AgentError(
+                agent=spec.name, kind="invalid_citation",
+                message=f"The {spec.name} worker cited sources it never retrieved; they are marked [unverified]: "
+                        + ", ".join(report.invalid),
+            ))
+
+        update: dict = {
+            "findings": [Finding(agent=spec.name, content=content, citations=report.valid, grounded=bool(report.valid))],
             "retrieved_chunk_ids": retrieved_chunk_ids(messages),
         }
+        return update | ({"errors": errors} if errors else {})
 
     return worker

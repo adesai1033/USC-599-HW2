@@ -1,4 +1,4 @@
-"""OrchestratorState plus Finding, Citation, RoutingDecision, AgentError, Dispatch and SupervisorDecision."""
+"""OrchestratorState plus Finding, Citation, CitationReport, RoutingDecision, AgentError, Dispatch and SupervisorDecision."""
 
 import operator
 from typing import Annotated, Literal, TypedDict
@@ -11,7 +11,7 @@ TaskType = Literal["lookup", "compare", "lit_review", "metadata", "current_event
 
 
 class Citation(BaseModel):
-    id: str  # a chunk ID like "2308.04079#method-03", or "web:N"
+    id: str  # a chunk ID like "2308.04079#method-03", or a web source like "web:1a2b3c4d"
     source: Literal["corpus", "web"]
     arxiv_id: str | None = None
     title: str | None = None
@@ -23,7 +23,13 @@ class Citation(BaseModel):
 class Finding(BaseModel):
     agent: str
     content: str
-    citations: list[Citation] = []
+    citations: list[Citation] = []  # only citations validated against this worker run's tool results
+    grounded: bool = False  # true only if at least one valid citation remains
+
+
+class CitationReport(BaseModel):
+    valid: list[Citation] = []  # first-appearance order, no duplicates
+    invalid: list[str] = []     # cited IDs that no tool returned this turn
 
 
 class RoutingDecision(BaseModel):
@@ -39,7 +45,10 @@ class RoutingDecision(BaseModel):
 
 class AgentError(BaseModel):
     agent: str
-    kind: str  # e.g. supervisor_parse_error, step_limit, worker_unavailable, repeated_dispatch
+    # supervisor: supervisor_parse_error, supervisor_error, step_limit, worker_unavailable, repeated_dispatch,
+    #   retry_limit; worker guard: worker_timeout, transport, provider_error, worker_exception;
+    # worker: invalid_citation, attribution_mismatch; synthesize: synthesize_error
+    kind: str
     message: str
 
 
@@ -69,3 +78,4 @@ class OrchestratorState(TypedDict):
     routing: Annotated[list[RoutingDecision], operator.add]
     errors: Annotated[list[AgentError], operator.add]
     dispatches: Annotated[list[Dispatch], operator.add]  # worker + instruction, in order
+    answer_citations: CitationReport                     # the final answer's citations, validated

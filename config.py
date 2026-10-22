@@ -26,20 +26,42 @@ class Settings:
         )
 
 
+def _env_number(name: str, default: float, minimum: float, kind: type = int) -> float:
+    """A numeric setting read at call time, so tests and probes can change it per run."""
+    value = kind(os.environ.get(name, str(default)))
+    if value < minimum:
+        raise RuntimeError(f"{name} must be at least {minimum}, got {value}.")
+    return value
+
+
 def max_supervisor_steps() -> int:
     """MAX_SUPERVISOR_STEPS (default 6): supervisor decisions per turn before it must synthesize."""
-    steps = int(os.environ.get("MAX_SUPERVISOR_STEPS", "6"))
-    if steps < 1:
-        raise RuntimeError(f"MAX_SUPERVISOR_STEPS must be at least 1, got {steps}.")
-    return steps
+    return _env_number("MAX_SUPERVISOR_STEPS", 6, 1)
 
 
 def worker_max_tool_rounds() -> int:
     """WORKER_MAX_TOOL_ROUNDS (default 4): tool-calling rounds a worker gets before it must summarize."""
-    rounds = int(os.environ.get("WORKER_MAX_TOOL_ROUNDS", "4"))
-    if rounds < 1:
-        raise RuntimeError(f"WORKER_MAX_TOOL_ROUNDS must be at least 1, got {rounds}.")
-    return rounds
+    return _env_number("WORKER_MAX_TOOL_ROUNDS", 4, 1)
+
+
+def max_worker_retries() -> int:
+    """MAX_WORKER_RETRIES (default 1): times a worker that failed this turn may be dispatched again."""
+    return _env_number("MAX_WORKER_RETRIES", 1, 0)
+
+
+def worker_timeout_s() -> float:
+    """WORKER_TIMEOUT_S (default 60): wall-clock limit for one worker run."""
+    return _env_number("WORKER_TIMEOUT_S", 60, 0.001, float)
+
+
+def tool_timeout_s() -> float:
+    """TOOL_TIMEOUT_S (default 30): limit for one MCP tool call."""
+    return _env_number("TOOL_TIMEOUT_S", 30, 0.001, float)
+
+
+def mcp_reconnect_backoff_s() -> float:
+    """MCP_RECONNECT_BACKOFF_S (default 30): wait after a failed reconnect before trying a server again."""
+    return _env_number("MCP_RECONNECT_BACKOFF_S", 30, 0, float)
 
 
 @lru_cache
