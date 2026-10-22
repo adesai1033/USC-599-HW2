@@ -14,6 +14,23 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-21 — Phase 0 smoke test passed
+
+**Done:** ran a one-off curl script (not committed) that made one call to each provider,
+one Tavily search, and one Firestore write, read and delete. Key values were never printed.
+
+**Results** (all PASS)
+- Gemini `gemini-3.8-flash`, Claude `claude-sonnet-5-5`, and OpenAI `gpt-6.1-sol`
+  (via the Responses API) each replied "ok".
+- The `text-embedding-3-small` embedding came back with 1536 dimensions.
+- Tavily search returned the 3DGS paper (arXiv 2308.04079).
+- The Firestore `(default)` database is Native mode in `us-west1`. The write, read and
+  delete all succeeded using my gcloud login.
+- The runtime service account `paper-assistant-run` has only `roles/datastore.user`.
+
+**Still open:** Firestore access as the service account itself gets tested from Cloud Run
+in Phase 7. Tavily through the Remote MCP endpoint (key in the URL) gets tested in Phase 3.
+
 ### 2026-10-21 — Phase 1 deployed to Cloud Run (revision `paper-assistant-00001-2hw`)
 
 **Done:** ran `./deploy.sh` (Cloud Build to Artifact Registry, then Cloud Run in `us-west1`
