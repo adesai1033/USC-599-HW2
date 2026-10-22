@@ -179,7 +179,11 @@ exclude:
     - "autonomous driving perception"
   # Hand-curated removals after reviewing data/selection_report.md. The freed slot goes to
   # the next-ranked candidate in the same topic.
-  arxiv_ids: []
+  arxiv_ids:
+    - "2301.05187"  # WIRE: generic implicit representation, not 3D-scene specific
+    - "2104.14540"  # The Temporal Opportunist: monocular depth, not MVS
+    - "2303.06042"  # MVImgNet: dataset paper
+    - "2512.03422"  # Best 3D scene representation for robotics: survey-style
 
 pdf:
   # Skip papers whose PDF is missing or larger than this, rather than parsing partial text.

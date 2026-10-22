@@ -14,6 +14,21 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-21 — Hand-curated corpus exclusions
+
+**Done:** after reviewing the borderline papers, I added four IDs to `exclude.arxiv_ids`
+and re-ran `select`. IGEV stereo matching (2303.06615) was kept, as were the LiDAR and
+generative-scene papers.
+
+| Removed | Replaced by (same topic) |
+|---|---|
+| WIRE (2301.05187) | S-NeRF: NeRF for Street Views (2303.00749) |
+| The Temporal Opportunist (2104.14540) | MVSTER (2204.07346) |
+| MVImgNet (2303.06042) | IterMVS (2112.05126) |
+| Best 3D Scene Representation for Robotics (2512.03422) | GS-LIVO (2501.08672) |
+
+**Result:** still 220 papers, with every topic at quota.
+
 ### 2026-10-21 — `ingest/fetch_arxiv.py`, select step run
 
 **Built:** `fetch_arxiv.py` with two steps, `select` and `download`. Neither calls a paid API.
