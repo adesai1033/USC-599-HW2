@@ -206,6 +206,28 @@ def test_same_url_gives_the_same_source_id():
     assert out["results"] == [{"source_id": WEB_ID, "url": WEB_URL, "title": "T", "content": "c"}]
 
 
+def test_tavily_error_payload_is_passed_to_the_model_not_called_malformed():
+    text = json.dumps({"error": "Search failed", "status": 400,
+                       "detail": {"error": "Query cannot consist only of site: operators. Please provide search terms."}})
+    result = mcp_client._normalize_tavily_result("tavily_search", CallToolResult(content=[TextContent(type="text", text=text)]))
+    assert result.isError
+    assert result.content[0].text == ("tavily_search failed: Query cannot consist only of site: operators. "
+                                      "Please provide search terms.")
+
+
+def test_every_arxiv_page_of_a_paper_gets_one_source_id():
+    pages = ["https://arxiv.org/abs/2610.04351", "https://arxiv.org/html/2610.04351v1", "http://www.arxiv.org/pdf/2610.04351v2.pdf",
+             "https://export.arxiv.org/abs/2610.04351v3/", "https://ar5iv.labs.arxiv.org/html/2610.04351v1"]
+    assert {mcp_client.normalize_url(u) for u in pages} == {"https://arxiv.org/abs/2610.04351"}
+    assert mcp_client.web_source_id("https://arxiv.org/abs/2610.04352") != mcp_client.web_source_id(pages[0])
+    assert mcp_client.normalize_url("https://arxiv.org/list/cs.CV/recent") == "https://arxiv.org/list/cs.CV/recent"
+    out = json.loads(mcp_client.normalize_tavily("tavily_search", json.dumps({"results": [
+        {"url": pages[0], "title": "LoCoSplat", "content": "abs"},
+        {"url": pages[1], "title": "LoCoSplat (html)", "content": "html"},
+    ]})))
+    assert [(r["source_id"], r["content"]) for r in out["results"]] == [(mcp_client.web_source_id(pages[0]), "abs")]
+
+
 @pytest.mark.parametrize("text", ["<html>rate limited</html>", "[]", '{"results": "nope"}', '{"results": [{"title": "no url"}]}'])
 def test_malformed_tavily_payload_becomes_a_tool_error(text):
     with pytest.raises(ValueError):

@@ -50,6 +50,11 @@ MAX_RESULT_CHARS = 100_000  # longer tool output is cut before it reaches a mode
 SECRET_ENV_VARS = ("TAVILY_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY")
 TAVILY_TOOLS = {"tavily_search", "tavily_extract"}
 TRACKING_PARAM = re.compile(r"^(utm_|fbclid$|gclid$)")
+# arxiv.org/abs/2610.04351, /html/2610.04351v1, /pdf/2610.04351v2.pdf, arXiv's own mirrors: one paper, one ID.
+ARXIV_HOSTS = {"arxiv.org", "export.arxiv.org", "ar5iv.labs.arxiv.org", "ar5iv.org"}
+ARXIV_PAGE = re.compile(
+    r"^/(?:abs|html|pdf)/(?P<id>\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?(?:\.pdf)?/?$"
+)
 REQUEST_TIMEOUT_CODE = 408  # McpError code the MCP SDK uses for a request that timed out
 
 ENV_REF = re.compile(r"\$\{([A-Z0-9_]+)\}")
@@ -131,10 +136,18 @@ def build_connection(manifest: dict) -> dict:
 
 
 def normalize_url(url: str) -> str:
-    """Lowercase scheme and host, drop the fragment, tracking parameters and a trailing slash."""
+    """Canonical form of a URL for source IDs.
+
+    http and https are the same, "www." is dropped, as are the fragment, tracking parameters and a
+    trailing slash. Every arXiv page of a paper (abs, html, pdf, any version) maps to its abs page.
+    """
     parts = urlsplit(url.strip())
+    scheme = "https" if parts.scheme.lower() in ("http", "https") else parts.scheme.lower()
+    host = parts.netloc.lower().removeprefix("www.")
+    if host in ARXIV_HOSTS and (page := ARXIV_PAGE.match(parts.path)):
+        return f"https://arxiv.org/abs/{page['id']}"
     query = urlencode(sorted((k, v) for k, v in parse_qsl(parts.query) if not TRACKING_PARAM.match(k)))
-    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), query, ""))
+    return urlunsplit((scheme, host, parts.path.rstrip("/"), query, ""))
 
 
 def web_source_id(url: str) -> str:
@@ -142,27 +155,41 @@ def web_source_id(url: str) -> str:
     return "web:" + hashlib.sha1(normalize_url(url).encode()).hexdigest()[:8]
 
 
+class TavilyError(Exception):
+    """Tavily reported an error (e.g. a 400 for a bad query) inside an otherwise successful MCP result."""
+
+
 def normalize_tavily(tool_name: str, text: str) -> str:
-    """Reshape a Tavily payload to {results: [{source_id, url, title, content}], ...}; ValueError if malformed."""
+    """Reshape a Tavily payload to {results: [{source_id, url, title, content}], ...}.
+
+    Raises TavilyError if Tavily reported an error, and ValueError if the payload is malformed.
+    """
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ValueError("response is not JSON") from exc
+    if isinstance(payload, dict) and payload.get("error"):
+        detail = payload.get("detail")
+        reason = detail.get("error") if isinstance(detail, dict) else detail
+        raise TavilyError(str(reason or payload["error"])[:300])
     results = payload.get("results") if isinstance(payload, dict) else None
     if not isinstance(results, list):
         raise ValueError("response has no results list")
-    normalized = []
+    normalized: dict[str, dict] = {}
     for result in results:
         if not isinstance(result, dict) or not isinstance(result.get("url"), str) or not result["url"].strip():
             raise ValueError("a result has no url")
+        source_id = web_source_id(result["url"])
+        if source_id in normalized:
+            continue  # another page of the same source, e.g. a paper's arXiv html page after its abs page
         content = result.get("raw_content") if tool_name == "tavily_extract" else result.get("content")
-        normalized.append({
-            "source_id": web_source_id(result["url"]),
+        normalized[source_id] = {
+            "source_id": source_id,
             "url": result["url"],
             "title": result.get("title") or "",
             "content": content or result.get("content") or "",
-        })
-    out: dict = {"results": normalized}
+        }
+    out: dict = {"results": list(normalized.values())}
     if payload.get("query"):
         out["query"] = payload["query"]
     if payload.get("answer"):
@@ -178,6 +205,9 @@ def _normalize_tavily_result(tool_name: str, result: CallToolResult) -> CallTool
     text = "".join(b.text for b in result.content if isinstance(b, TextContent))
     try:
         return CallToolResult(content=[TextContent(type="text", text=normalize_tavily(tool_name, text))])
+    except TavilyError as exc:
+        # Tavily's own message tells the model how to fix the call, e.g. "provide search terms".
+        return _error_result(f"{tool_name} failed: {redact(str(exc))}")
     except ValueError as exc:
         logger.warning("%s returned a malformed response: %s", tool_name, exc)
         return _error_result(f"{tool_name} returned a malformed response ({exc}); web results are unavailable for this call.")

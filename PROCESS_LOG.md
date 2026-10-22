@@ -14,6 +14,37 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Fixed known issues 4 (citation formatting) and 5 (duplicate web sources)
+
+**Issue 4, citation formatting:**
+- `prompts/research.md` and `prompts/synthesize.md` now both require one ID per pair of brackets,
+  written side by side as `[a][b]`.
+- `synthesize.md` no longer conflicts: instead of "copy verbatim" plus "one per bracket", it says
+  to split any grouped IDs it finds in the findings.
+- Citation examples in both prompts are now plain text, not code spans, and both prompts say
+  never to put citations in code formatting.
+
+**Issue 5, duplicate web sources:**
+- `normalize_url` now treats http and https as the same, drops `www.`, and maps every arXiv page
+  of a paper (abs, html, pdf, any `vN`, export, ar5iv) to `https://arxiv.org/abs/<id>`.
+- `normalize_tavily` keeps only the first result per `source_id`.
+- IDs of plain arXiv abs URLs are unchanged, e.g. LoCoSplat is still `web:1fd729ad`.
+
+**Found while verifying:** Tavily reports some failures inside a successful MCP result, e.g.
+`{"error": "Search failed", "status": 400, "detail": {"error": "Query cannot consist only of
+site: operators..."}}`. The normalizer was calling these "malformed response", so the model
+never learned why its query failed. It now returns `tavily_search failed: <Tavily's message>`
+as a tool error.
+
+**Verified:**
+- `pytest tests/`: 82 passed, 2 live tests skipped (2 new tests).
+- I re-ran the 3DGS and "this month" CLI questions. Across 41 citations, none were grouped or in
+  backticks, and no paper was cited under two web IDs.
+
+**Still open:** third-party arXiv mirrors (e.g. alphaxiv.org) keep their own IDs. Issues 1–3 are
+unchanged. In the re-run, the worker didn't use Tavily's `time_range`, so the "this month"
+results were again thin; the answer said so honestly.
+
 ### 2026-10-22 — Known issues after Phase 4b (diagnosed, not yet fixed)
 
 The four Phase 4b CLI runs worked end to end, but five things don't work well. Each was traced to

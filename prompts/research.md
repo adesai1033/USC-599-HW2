@@ -23,9 +23,12 @@ do not write the final answer for the user; another step does, from your finding
 
 ## Reporting
 
-- Cite every claim. Use `[chunk_id]` exactly as returned by `search_corpus` (e.g.
-  `[2308.04079#method-03]`) or `[web:xxxxxxxx]` with the `source_id` of a web result. Use only IDs
-  that tools returned in this run. Put each citation directly after the claim it supports.
+- Cite every claim, directly after the claim it supports. A corpus citation is the chunk_id from
+  `search_corpus` in square brackets, like [2308.04079#method-03]. A web citation is a result's
+  source_id in square brackets, like [web:1a2b3c4d]. Use only IDs that tools returned in this run.
+- Exactly one ID per pair of brackets. For several sources, write them side by side, like
+  [2308.04079#method-03][2003.08934#method-00]; never put several IDs in one bracket, separated by
+  commas or semicolons. Write citations as plain text, never inside code formatting.
 - Keep corpus findings and web findings in separate labeled parts: **Corpus** and **Web**. Leave out
   a part you did not use.
 - If nothing relevant turns up, say "not in the corpus", and say whether the web had anything. Never
