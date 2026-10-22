@@ -14,6 +14,24 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-21 — `ingest/build_db.py`
+
+**Built:** `build_db.py` rebuilds `index/papers.sqlite` from `data/selected.json` using the
+AGENTS.md schema: `papers`, `authors`, `paper_authors` and an empty `results` table.
+- **Constraints:** `results` has CHECK constraints on `higher_is_better` and `verified`.
+- **Indexes:** on year, author and (benchmark, metric).
+- **Safe rebuild:** the DB is written to a temp file and swapped in at the end.
+
+**Citation fallback:** Semantic Scholar reports 0 citations for NeRF, so zero or missing counts
+fall back to OpenAlex.
+- OpenAlex splits a paper's arXiv preprint and published version into separate records
+  (NeRF: 524 on the arXiv DOI, 5,324 on the ECCV version).
+- The fallback searches by title and takes the highest count among exact title matches. NeRF
+  was the only paper that needed it.
+
+**Result:** 220 papers, 922 authors, 1,297 author links, no missing citation counts, and 1 paper
+with no venue. Top cited: 3DGS 11,022, Instant-NGP 6,490, NeRF 5,324.
+
 ### 2026-10-21 — `ingest/embed.py`
 
 **Built:** `embed.py` embeds `data/chunks.jsonl` with `text-embedding-3-small` into the
