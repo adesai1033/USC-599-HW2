@@ -14,6 +14,36 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-21 — `ingest/chunk.py`
+
+**Built:** `chunk.py` reads `data/parsed/` and writes `data/chunks.jsonl` with the fields
+`chunk_id, arxiv_id, title, year, section, page, url, text`.
+- **Abstracts:** each paper's arXiv abstract becomes one chunk with `section="abstract"`.
+- **Body:** each section is split into sentences (and into words if a sentence is too long),
+  then packed greedily into chunks of up to 800 tokens with about 100 tokens of overlap.
+  Chunks never cross section boundaries, and a final chunk under 150 tokens is merged into
+  the previous one (merged size capped at 1,000).
+- **Splitting details:** sentence splitting ignores abbreviations such as "et al." and
+  "Fig.". Subheadings stay attached to their first paragraph, and paragraphs cut at a
+  column or page break are rejoined.
+- **Captions:** packed into chunks of up to 300 tokens with `section="captions"`.
+- **Chunk IDs:** `{arxiv_id}#{section_slug}-{nn}`, numbered per slug within a paper. The run
+  fails if any ID is duplicated.
+- **Token counts:** estimated at 4 characters per token, which avoids adding a tokenizer
+  dependency.
+
+**Bugs found and fixed while checking the output**
+- When a short final chunk was merged into the previous one, the overlap sentences were
+  duplicated. Units are now de-duplicated by index.
+- Only 35% of consecutive chunks actually overlapped, because whole paragraphs were the
+  packing unit. Packing by sentence raised that to 90%; the rest sit next to a single
+  sentence longer than 100 tokens.
+- There were mid-sentence paragraph breaks at column and page splits. 0 remain.
+
+**Result:** 220 papers produce 4,870 chunks: 220 abstract, 3,714 body and 936 caption. Body
+chunks are about 126 tokens at p5, 732 at the median, 798 at p95 and 877 at most. About
+2.44M tokens in total to embed.
+
 ### 2026-10-21 — Full download and parse; parser fixes from corpus-wide checks
 
 **Done:** downloaded all 220 PDFs (3.7 GB, gitignored) and parsed all 220. The first pass
