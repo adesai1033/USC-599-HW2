@@ -68,13 +68,13 @@ KNOWN_HEADINGS = {
 }
 DROP_SECTIONS = {"abstract", "references", "acknowledgments"}
 
-NUMBERED_HEADING = re.compile(r"^(?P<num>(\d{1,2}|[A-H])(\.\d{1,2}){0,2})\.?\s+(?P<title>[A-Z][^\n]{1,80})$")
+NUMBERED_HEADING = re.compile(r"^(?P<num>(\d{1,2}|[A-H]|[IVX]{1,5})(\.\d{1,2}){0,2})\.?\s+(?P<title>[A-Z][^\n]{1,80})$")
 CAPTION = re.compile(r"^(Figure|Fig\.|Table)\s*[0-9A-Z]+[.:]?\s", re.IGNORECASE)
 ARXIV_STAMP = re.compile(r"arXiv:\d{4}\.\d{4,5}(v\d+)?\s*\[")
 PAGE_NUMBER = re.compile(r"^\d{1,3}$")
 WORD = re.compile(r"[A-Za-z]{3,}")
 HYPHEN_BREAK = re.compile(r"(\w)-\n(\w)")
-SECTION_NUMBER = re.compile(r"^(\d{1,2}|[A-H])(\.\d{1,2}){0,2}\.?$")
+SECTION_NUMBER = re.compile(r"^(\d{1,2}|[A-H]|[IVX]{1,5})(\.\d{1,2}){0,2}\.?$")
 
 logger = logging.getLogger("parse_pdfs")
 
@@ -89,7 +89,7 @@ def clean(text: str) -> str:
 
 
 def block_lines(block: dict) -> list[dict]:
-    """Return the block's lines as {text, size, bold}, merging a bare section number with the next line."""
+    """Return the block's lines as {text, size, bold}."""
     lines = []
     for line in block["lines"]:
         spans = [s for s in line["spans"] if s["text"].strip()]
@@ -102,13 +102,10 @@ def block_lines(block: dict) -> list[dict]:
                 "bold": all(s["flags"] & BOLD_FLAG or BOLD_FONT.search(s["font"]) for s in spans),
             }
         )
-    merged: list[dict] = []
-    for line in lines:
-        if merged and SECTION_NUMBER.match(merged[-1]["text"]) and line["text"][:1].isupper():
-            merged[-1] = {**line, "text": f"{merged[-1]['text']} {line['text']}"}
-        else:
-            merged.append(line)
-    return merged
+    # A heading-only block like "1" / "INTRODUCTION"; longer blocks are table or figure text.
+    if len(lines) == 2 and SECTION_NUMBER.match(lines[0]["text"]) and lines[1]["text"][:1].isupper():
+        return [{**lines[1], "text": f"{lines[0]['text']} {lines[1]['text']}"}]
+    return lines
 
 
 def is_equation_fragment(text: str) -> bool:
@@ -156,7 +153,7 @@ def classify_heading(line: dict, body_size: float) -> tuple[str, str, int] | Non
         return None
     match = NUMBERED_HEADING.match(text)
     title = (match["title"] if match else text).strip().rstrip(":.")
-    if not WORD.search(title):
+    if len(title) < 4 or not WORD.search(title) or sum(c.isalpha() or c == " " for c in title) < 0.8 * len(title):
         return None
     emphasized = line["bold"] or line["size"] >= body_size + 0.8 or (title.isupper() and len(title) > 3)
     if not emphasized:

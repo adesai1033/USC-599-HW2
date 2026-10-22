@@ -14,6 +14,31 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-21 — Full download and parse; parser fixes from corpus-wide checks
+
+**Done:** downloaded all 220 PDFs (3.7 GB, gitignored) and parsed all 220. The first pass
+skipped 14 PDFs over the old 40 MB cap, and the second pass at the 80 MB cap fetched them.
+`caffeinate -is` kept the Mac awake for the download, retry and parse.
+
+**Fixes from checking the whole corpus**
+- **IEEE-style headings:** Roman-numeral headings ("I. INTRODUCTION") weren't recognised, so
+  4 SLAM papers had 1–2 sections (SemGauss-SLAM kept 3.7k characters) and 4 more had no
+  headings at all. The numbered-heading pattern now accepts I–X.
+- **False headings:** 7 of 2,045 headings were table cells or axis labels ("FPS", "Avg.",
+  "Iterations (×103)", one SVD formula) merged with a number on the line above. Number
+  merging now only happens in 2-line, heading-only blocks. Titles must be at least 4
+  characters and at least 80% letters.
+
+**Final parse stats:** 220/220 parsed with 0 failures and 0 single-section fallbacks. Every
+paper has an introduction section. The median paper has 9 sections and 34k characters
+(minimum 12k); the corpus totals 7.9M characters. 3,860 captions, with every paper having
+some. No odd headings remain.
+
+**Spot check** (20 random paragraphs, seed 599): reading order across columns is correct,
+inline math is readable, and there's no garbled LaTeX. Paragraphs split at column or page
+breaks start mid-sentence; chunk.py joins paragraphs within a section, so this resolves
+there. Subfigure captions starting "(a) …" stay in the body text, which is a minor issue.
+
 ### 2026-10-21 — `ingest/parse_pdfs.py`; PDF download started
 
 **Built:** `parse_pdfs.py` (PyMuPDF, `pymupdf==2.0`, approved). For each PDF it writes
