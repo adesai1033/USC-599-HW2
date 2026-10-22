@@ -23,7 +23,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.registry import AGENTS, PROMPTS_DIR
 from config import max_supervisor_steps, max_worker_retries
-from graph.state import AgentError, Dispatch, OrchestratorState, SupervisorDecision
+from graph.state import AgentError, Dispatch, Finding, OrchestratorState, SupervisorDecision
 from graph.trace import emit_trace
 from llm import get_llm
 
@@ -76,12 +76,22 @@ def _context(state: OrchestratorState, step: int, max_steps: int) -> str:
     findings = state.get("findings", [])
     errors = state.get("errors", [])
     parts.append("Dispatches so far:\n" + ("\n".join(f"- {d.worker}: {d.instruction}" for d in dispatches) or "(none)"))
-    parts.append("Findings so far:\n" + ("\n".join(
-        f"- from {f.agent}: {f.content[:FINDING_PREVIEW_CHARS]}{'...' if len(f.content) > FINDING_PREVIEW_CHARS else ''}"
-        for f in findings
-    ) or "(none)"))
+    parts.append("Findings so far:\n" + ("\n".join(_finding_line(f) for f in findings) or "(none)"))
     parts.append("Errors so far:\n" + (_error_summary(state) or "(none)"))
     return "\n\n".join(parts)
+
+
+def _finding_line(finding: Finding) -> str:
+    """A finding for the supervisor: a preview of its text, plus every paper it cited, never truncated,
+    so a later instruction can hand those identifiers to the next worker."""
+    preview = finding.content[:FINDING_PREVIEW_CHARS] + ("..." if len(finding.content) > FINDING_PREVIEW_CHARS else "")
+    papers = list(dict.fromkeys(c.arxiv_id for c in finding.citations if c.arxiv_id))
+    line = f"- from {finding.agent} (grounded: {'yes' if finding.grounded else 'no'}): {preview}"
+    if papers:
+        line += f"\n  Papers cited: {', '.join(papers)}"
+    if web := [c.id for c in finding.citations if c.source == "web"]:
+        line += f"\n  Web sources cited: {', '.join(web)}"
+    return line
 
 
 def _failures(state: OrchestratorState) -> dict[str, int]:

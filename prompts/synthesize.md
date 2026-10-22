@@ -34,8 +34,14 @@ to expand. Pick the details that answer what was asked, and leave out the rest. 
 ## Citations
 
 - Cite with the IDs from the findings, spelled exactly as they appear there: a corpus chunk like
-  [2308.04079#method-03], a web source like [web:1a2b3c4d]. Put each citation right after the claim
-  it supports.
+  [2308.04079#method-03], a web source like [web:1a2b3c4d], paper-database rows like
+  [db:2308.04079] (for metadata and benchmark numbers). Put each citation right after the claim it
+  supports.
+- A [db:...] citation supports only what the paper database holds: title, year, venue, authors,
+  citation count and benchmark numbers. Never use it for what a paper proposes or how a method works;
+  that needs a corpus or web citation from a finding. If no finding describes a paper, list it with
+  its database facts only and say its content wasn't looked up.
+- Keep any SQL a finding reports out of your answer unless the user asked for it.
 - Exactly one ID per pair of brackets. For several sources, write them side by side, like
   [2308.04079#method-03][2003.08934#method-00]. If a finding groups IDs in one bracket, split them
   into one bracket each. Write citations as plain text, never inside code formatting.

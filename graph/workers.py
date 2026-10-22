@@ -9,10 +9,13 @@ WORKER_MAX_TOOL_ROUNDS rounds, the model is called once more without tools to su
 The parent-graph node maps the subgraph's result to a Finding and to retrieved_chunk_ids (every chunk
 any tool returned). Citations are validated against the sources this run's tools returned: an ID
 that no tool returned is replaced with [unverified] and reported as an invalid_citation error, and
-the finding is grounded only if at least one valid citation remains.
+the finding is grounded if at least one valid citation remains or a run_sql query returned rows.
+Citable sources are chunks (search_corpus, get_chunks), web results (Tavily) and database rows
+(db:<arxiv_id> for every arXiv ID in a run_sql or get_paper_metadata result).
 """
 
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import date
@@ -41,6 +44,7 @@ SUMMARIZE_NOW = (
     "citing only IDs that appear in them. Do not call any more tools."
 )
 CORPUS_TOOLS = {"search_corpus", "get_chunks"}
+ARXIV_ID = re.compile(r"\d{4}\.\d{4,5}")
 FIX_ATTRIBUTION = (
     "Some claims name a paper but cite a source that never mentions it:\n{problems}\n\n"
     "Rewrite your findings in full. For each of these claims, cite a tool result above that is about the paper "
@@ -87,6 +91,30 @@ def _web_results(message: ToolMessage) -> list[dict]:
     return [r for r in results or [] if isinstance(r, dict) and isinstance(r.get("source_id"), str)]
 
 
+def _sql_result(message: ToolMessage) -> dict | None:
+    """A successful run_sql payload ({sql, columns, rows, row_count, truncated}), or None."""
+    payload = _payload(message) if message.name == "run_sql" else {}
+    return payload if isinstance(payload.get("rows"), list) and isinstance(payload.get("sql"), str) else None
+
+
+def _db_papers(message: ToolMessage) -> dict[str, str | None]:
+    """arXiv IDs (with a title when the result has one) in a run_sql or get_paper_metadata result."""
+    papers: dict[str, str | None] = {}
+    if message.name == "get_paper_metadata":
+        for paper in _payload(message).get("papers") or []:
+            if isinstance(paper, dict) and isinstance(paper.get("arxiv_id"), str):
+                papers[paper["arxiv_id"]] = paper.get("title")
+    elif (result := _sql_result(message)) is not None:
+        columns = [str(c).lower() for c in result.get("columns") or []]
+        title_at = columns.index("title") if "title" in columns else None
+        for row in result["rows"]:
+            title = row[title_at] if title_at is not None and title_at < len(row) else None
+            for cell in row:
+                if isinstance(cell, str) and ARXIV_ID.fullmatch(cell):
+                    papers[cell] = papers.get(cell) or (title if isinstance(title, str) else None)
+    return papers
+
+
 def summarize_args(args: dict) -> str:
     text = json.dumps(args, ensure_ascii=False)
     return text if len(text) <= 120 else text[:117] + "..."
@@ -102,7 +130,11 @@ def summarize_result(message: ToolMessage) -> str:
     if web := _web_results(message):
         listed = [f"{r['source_id']} ({urlsplit(r['url']).netloc})" for r in web[:3]]
         return f"{len(web)} results: " + ", ".join(listed) + (", ..." if len(web) > 3 else "")
+    if (result := _sql_result(message)) is not None:
+        return f"{result.get('row_count', len(result['rows']))} rows" + (" (truncated)" if result.get("truncated") else "")
     payload = _payload(message)
+    if isinstance(payload.get("tables"), list):
+        return f"schema: {len(payload['tables'])} tables"
     if "papers" in payload:
         missing = payload.get("missing") or []
         return f"{len(payload['papers'])} papers" + (f", missing {missing}" if missing else "")
@@ -125,7 +157,23 @@ def allowed_citations(messages: list[AnyMessage]) -> dict[str, Citation]:
             )
         for r in _web_results(message):
             allowed[r["source_id"]] = Citation(id=r["source_id"], source="web", title=r.get("title") or None, url=r.get("url"))
+        for arxiv_id, title in _db_papers(message).items():
+            existing = allowed.get(f"db:{arxiv_id}")
+            allowed[f"db:{arxiv_id}"] = Citation(
+                id=f"db:{arxiv_id}", source="db", arxiv_id=arxiv_id, title=title or (existing.title if existing else None),
+                url=f"https://arxiv.org/abs/{arxiv_id}",
+            )
     return allowed
+
+
+def executed_queries(messages: list[AnyMessage]) -> tuple[list[str], bool]:
+    """The SQL run_sql executed successfully in this run, and whether any of it returned rows."""
+    queries, any_rows = [], False
+    for message in messages:
+        if isinstance(message, ToolMessage) and (result := _sql_result(message)) is not None:
+            queries.append(result["sql"])
+            any_rows = any_rows or bool(result["rows"])
+    return queries, any_rows
 
 
 def source_texts(messages: list[AnyMessage]) -> dict[str, str]:
@@ -167,6 +215,10 @@ def make_worker(
     a server that went down (or came back) since the graph was built is reflected in the next run.
     """
     current_tools = tools if callable(tools) else (lambda: tools)
+
+    def max_tool_rounds() -> int:
+        return spec.max_tool_rounds or worker_max_tool_rounds()
+
     current_notes = unavailable_notes if callable(unavailable_notes) else (lambda: unavailable_notes)
     base_prompt = spec.prompt_file.read_text()
 
@@ -176,7 +228,7 @@ def make_worker(
 
         async def worker_agent(state: WorkerState) -> dict:
             messages = [SystemMessage(system_prompt), *state["messages"]]
-            max_rounds = worker_max_tool_rounds()
+            max_rounds = max_tool_rounds()
             if state["rounds"] >= max_rounds:
                 emit_trace(spec.name, "decision", step=state["step"], agent=spec.name,
                            detail=f"tool round cap ({max_rounds}) reached; summarizing without tools")
@@ -217,7 +269,7 @@ def make_worker(
         result = await build_subgraph(list(current_tools()), system_prompt).ainvoke(
             {"messages": [HumanMessage(task)], "instruction": state.get("instruction", ""), "rounds": 0,
              "step": state.get("step")},
-            {"recursion_limit": 2 * worker_max_tool_rounds() + 4},
+            {"recursion_limit": 2 * max_tool_rounds() + 4},
         )
         messages = result["messages"]
         final = next((m for m in reversed(messages) if isinstance(m, AIMessage)), AIMessage(""))
@@ -255,8 +307,11 @@ def make_worker(
                         + ", ".join(report.invalid),
             ))
 
+        # Grounded: a verified citation survived, or a query returned rows (an aggregate cites no single paper).
+        queries, any_rows = executed_queries(messages)
         update: dict = {
-            "findings": [Finding(agent=spec.name, content=content, citations=report.valid, grounded=bool(report.valid))],
+            "findings": [Finding(agent=spec.name, content=content, citations=report.valid,
+                                 grounded=bool(report.valid) or any_rows, queries=queries)],
             "retrieved_chunk_ids": retrieved_chunk_ids(messages),
         }
         return update | ({"errors": errors} if errors else {})

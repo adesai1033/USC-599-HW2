@@ -132,6 +132,8 @@ ingest/              offline pipeline — never runs in the container
   embed.py           embeddings → index/chroma/
   build_db.py        metadata (arXiv + Semantic Scholar) → index/papers.sqlite
   extract_results.py LLM extraction of benchmark results → results table (verified=0)
+  results_seed.csv   hand-entered benchmark results from the papers (header only until filled in)
+  seed_results.py    validates results_seed.csv and upserts it into results with verified=1 (idempotent)
 data/                gitignored: raw PDFs, intermediate JSON. Excluded from the image
 index/               gitignored but NOT gcloudignored: chroma/ and papers.sqlite, baked into the image
 scripts/
@@ -212,7 +214,10 @@ class OrchestratorState(TypedDict):
     answer_citations: CitationReport                     # the final answer's citations, validated
 ```
 
-`Finding.grounded` is true only if at least one of its citations survived validation.
+`Finding.grounded` is true if at least one of its citations survived validation, or a `run_sql`
+query in that run returned rows (an aggregate such as counts per year cites no single paper).
+`Finding.queries` lists the SQL that `run_sql` executed successfully in that run (empty for workers
+without SQL). `AgentSpec.max_tool_rounds` overrides `WORKER_MAX_TOOL_ROUNDS` per agent; `data` uses 5.
 `CitationReport = {valid: list[Citation], invalid: list[str]}`; Phase 6 sends it as the
 `citations` SSE event.
 
@@ -255,12 +260,19 @@ On a provider error (timeout, 429, 5xx, auth failure) the call retries once on t
 - **Augmentation**: `rag/format.py` renders each chunk as `[chunk_id] (title, §section,
   p.N)\n<text>`. The prompt template lives in `prompts/` and requires a `[chunk_id]` on
   every corpus-derived claim.
-- **Citations**: web results are cited as `[web:<8 hex>]`, e.g. `[web:1a2b3c4d]`: `web:` plus the
-  first 8 hex chars of sha1(normalized URL), so the same source keeps the same ID across searches.
-  `mcp_client.py` adds this `source_id` to every Tavily result. `rag/citations.py`
-  checks every cited ID against `retrieved_chunk_ids` for this turn. Valid IDs go out in
-  the `citations` SSE event with `arxiv.org/abs/<id>` links. Unknown IDs are reported as
-  `invalid` and shown as unverified in the UI.
+- **Citations**: three formats.
+  - Corpus chunks: `[2308.04079#method-03]`.
+  - Web results: `[web:<8 hex>]`, e.g. `[web:1a2b3c4d]`: `web:` plus the first 8 hex chars of
+    sha1(normalized URL), so the same source keeps the same ID across searches. `mcp_client.py`
+    adds this `source_id` to every Tavily result.
+  - Paper-database rows: `[db:<arxiv_id>]`, e.g. `[db:2308.04079]`, meaning "this fact comes from
+    the paper database row(s) for this paper". It renders as an `arxiv.org/abs/<id>` link labeled
+    as coming from the paper database. A data-worker run may cite the arXiv IDs that appeared in
+    its `run_sql` or `get_paper_metadata` results.
+
+  `rag/citations.py` validates every cited ID against what was retrieved this turn (see rule 6).
+  Valid IDs go out in the `citations` SSE event with `arxiv.org/abs/<id>` links. Unknown IDs are
+  reported as `invalid` and shown as unverified in the UI.
 - **papers.sqlite schema**:
   `papers(arxiv_id PK, title, year, venue, citation_count, primary_category, url)`,
   `authors(id PK, name)`, `paper_authors(arxiv_id, author_id)`,
@@ -326,8 +338,9 @@ Do not violate them to "make tests pass."
    emits a `RoutingDecision` with a reason. No direct model construction outside
    `llm.py`. The canonical query set must exercise both fast and strong tiers.
 6. **Citations only from retrieval.** The model may cite only chunk IDs returned by
-   `search_corpus`/`get_chunks` this turn, or `[web:<8 hex>]` sources returned by Tavily this
-   turn. `rag/citations.py` enforces this. Never fabricate a citation to look grounded.
+   `search_corpus`/`get_chunks` this turn, `[web:<8 hex>]` sources returned by Tavily this
+   turn, or `[db:<arxiv_id>]` for papers that appeared in `run_sql`/`get_paper_metadata` results
+   this turn. `rag/citations.py` enforces this. Never fabricate a citation to look grounded.
    Validation runs at two levels: in each worker, against the sources its tools returned in
    that run (an invalid ID becomes `[unverified]` in the finding and an `invalid_citation`
    error), and on the final answer, against the union of the findings' citations (stored in

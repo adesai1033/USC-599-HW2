@@ -11,8 +11,8 @@ TaskType = Literal["lookup", "compare", "lit_review", "metadata", "current_event
 
 
 class Citation(BaseModel):
-    id: str  # a chunk ID like "2308.04079#method-03", or a web source like "web:1a2b3c4d"
-    source: Literal["corpus", "web"]
+    id: str  # a chunk "2308.04079#method-03", a web source "web:1a2b3c4d", or database rows "db:2308.04079"
+    source: Literal["corpus", "web", "db"]
     arxiv_id: str | None = None
     title: str | None = None
     section: str | None = None
@@ -24,7 +24,10 @@ class Finding(BaseModel):
     agent: str
     content: str
     citations: list[Citation] = []  # only citations validated against this worker run's tool results
-    grounded: bool = False  # true only if at least one valid citation remains
+    # True if at least one valid citation remains, or a run_sql query returned rows (an aggregate,
+    # like counts per year, has no single paper to cite).
+    grounded: bool = False
+    queries: list[str] = []  # SQL that run_sql executed successfully in this run
 
 
 class CitationReport(BaseModel):

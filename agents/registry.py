@@ -2,7 +2,7 @@
 
 AGENTS holds every specialized agent's spec. mcp_client.py filters MCP tools with these allowlists.
 WORKERS holds the agents that are wired into the graph as worker nodes; an agent is added to it in
-the phase that implements it (research in Phase 4b).
+the phase that implements it (research in Phase 4b, data in 4d).
 """
 
 from dataclasses import dataclass
@@ -19,23 +19,28 @@ class AgentSpec:
     prompt_file: Path
     tools: frozenset[str]
     default_tier: Literal["fast", "strong"]
+    max_tool_rounds: int | None = None  # overrides WORKER_MAX_TOOL_ROUNDS for this agent
 
 
 AGENTS: dict[str, AgentSpec] = {
     "research": AgentSpec(
         name="research",
-        description="Answers technical questions from the 3D vision paper corpus and the live web, with citations",
+        description="Answers technical questions by reading paper text in the 3D vision corpus and the live web, "
+        "with citations: how methods work, what a paper proposes, recent work. Not for counting or ranking "
+        "papers by metadata or benchmark results.",
         prompt_file=PROMPTS_DIR / "research.md",
         tools=frozenset({"search_corpus", "get_paper_metadata", "tavily_search"}),
         default_tier="fast",
     ),
     "data": AgentSpec(
         name="data",
-        description="Answers structured questions with SQL over paper metadata and benchmark results: counts, "
-        "rankings, citation counts, authors, venues, best PSNR/LPIPS on a benchmark.",
+        description="Answers questions about paper metadata (years, venues, authors, citation counts) and reported "
+        "benchmark results (PSNR, SSIM, LPIPS, Chamfer, speed) using SQL over the paper database. Does not read "
+        "paper text.",
         prompt_file=PROMPTS_DIR / "data.md",
         tools=frozenset({"describe_schema", "run_sql", "get_paper_metadata"}),
         default_tier="fast",
+        max_tool_rounds=5,  # schema -> explore values -> query -> one retry -> metadata
     ),
     "summary": AgentSpec(
         name="summary",
@@ -47,7 +52,7 @@ AGENTS: dict[str, AgentSpec] = {
     ),
 }
 
-WORKERS: dict[str, AgentSpec] = {name: AGENTS[name] for name in ("research",)}
+WORKERS: dict[str, AgentSpec] = {name: AGENTS[name] for name in ("research", "data")}
 
 
 def available_workers() -> list[str]:

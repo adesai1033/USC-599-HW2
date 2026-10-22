@@ -75,6 +75,7 @@ async def run_turn(graph, mcp: MCPTools, question: str) -> None:
         print(answer.removeprefix("".join(streamed).rstrip()).strip())
 
     print_sources(final)
+    print_queries(final.get("findings", []))
     print_errors(final.get("errors", []))
     summary = (
         f"steps={final.get('step', 0)} "
@@ -96,10 +97,20 @@ def print_sources(final: dict) -> None:
         for i, c in enumerate(report.valid, 1):
             where = ", ".join(x for x in [c.title, f"§{c.section}" if c.section else None,
                                           f"p.{c.page}" if c.page is not None else None] if x)
-            print(f"  {i}. [{c.id}] {where or '(no metadata)'} — {c.url or ''}")
+            source = " (paper database)" if c.source == "db" else ""
+            print(f"  {i}. [{c.id}] {where or '(no metadata)'}{source} — {c.url or ''}")
     invalid = report.invalid if report else []
     line = f"UNVERIFIED CITATIONS: {', '.join(invalid) if invalid else '(none)'}"
     print(f"\n{RED}{line}{RESET}" if invalid else f"\n{DIM}{line}{RESET}")
+
+
+def print_queries(findings: list) -> None:
+    """The SQL each finding's worker executed successfully, in order."""
+    for finding in findings:
+        if finding.queries:
+            print(f"\nSQL run by {finding.agent}:")
+            for query in finding.queries:
+                print(DIM + "\n".join(f"  {line}" for line in query.splitlines()) + RESET)
 
 
 def print_errors(errors: list) -> None:

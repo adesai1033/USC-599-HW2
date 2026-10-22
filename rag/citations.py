@@ -1,6 +1,11 @@
 """Parses cited IDs out of model text, validates them against what was retrieved, and finds claims
 whose citation is about a different paper.
 
+Three citation types:
+  [2308.04079#method-03]  a corpus chunk
+  [web:1a2b3c4d]          a web source (8 hex chars of the URL's sha1)
+  [db:2308.04079]         the paper database row(s) for one paper (from run_sql / get_paper_metadata)
+
 Validation runs twice per turn: in each worker (allowed = the sources its tools returned in that
 run; invalid markers become [unverified]) and on the final answer (allowed = the union of the
 findings' citations; the answer has already streamed, so invalid IDs are only reported).
@@ -17,6 +22,7 @@ from graph.state import Citation, CitationReport
 # The corpus has only new-style arXiv IDs (YYMM.NNNNN), so old-style IDs (cs/0601001) are not matched.
 CHUNK_ID = re.compile(r"\d{4}\.\d{4,5}#[a-z0-9]+(?:-[a-z0-9]+)*-\d{2,}")
 WEB_ID = re.compile(r"web:[0-9a-f]{8}")
+DB_ID = re.compile(r"db:\d{4}\.\d{4,5}")
 BRACKET = re.compile(r"\[([^\[\]\n]{1,400})\]")
 
 
@@ -26,13 +32,13 @@ def parse_citation_ids(text: str) -> list[str]:
     for group in BRACKET.finditer(text):
         for token in re.split(r"[,;]", group.group(1)):
             token = token.strip()
-            if (CHUNK_ID.fullmatch(token) or WEB_ID.fullmatch(token)) and token not in ids:
+            if is_citation_id(token) and token not in ids:
                 ids.append(token)
     return ids
 
 
-def is_web_id(citation_id: str) -> bool:
-    return citation_id.startswith("web:")
+def is_citation_id(token: str) -> bool:
+    return bool(CHUNK_ID.fullmatch(token) or WEB_ID.fullmatch(token) or DB_ID.fullmatch(token))
 
 
 def validate(text: str, allowed: Mapping[str, Citation]) -> CitationReport:
@@ -65,7 +71,7 @@ def _strip_citations(text: str) -> str:
     """Remove bracketed citations so the arXiv IDs inside chunk IDs don't count as mentions."""
     def drop(group: re.Match) -> str:
         tokens = [t.strip() for t in re.split(r"[,;]", group.group(1))]
-        return " " if all(CHUNK_ID.fullmatch(t) or WEB_ID.fullmatch(t) for t in tokens) else group.group(0)
+        return " " if all(is_citation_id(t) for t in tokens) else group.group(0)
 
     return BRACKET.sub(drop, text)
 

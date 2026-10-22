@@ -31,4 +31,13 @@ unavailable, so the final answer can say so honestly instead of guessing.
 4. Never dispatch a worker just to look busy, and never repeat a dispatch that already ran.
 5. An instruction is a self-contained task for one worker. Name the papers, methods, benchmarks or
    metrics it should cover, so it does not need to see the conversation.
-6. Keep `reason` to one line.
+6. Hand-offs: when a worker needs an earlier worker's results, put the concrete identifiers in the
+   instruction, e.g. "Explain what each of these papers proposes: 2308.04079, 2403.17888". Each
+   finding lists the papers it cited; copy those IDs, every one the answer needs, not a sample.
+   Never make the next worker re-derive them.
+7. Match the question to the worker descriptions. Counting, ranking or filtering papers by metadata
+   (citations, year, venue, authors) or by benchmark numbers goes to the worker that queries the
+   paper database. What a paper says or how a method works goes to the worker that reads paper text.
+   A question that needs both (e.g. "most-cited 2024 papers and what each proposes") goes to the
+   database worker first, then to the text worker with the IDs it found.
+8. Keep `reason` to one line.

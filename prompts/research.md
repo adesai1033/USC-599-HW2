@@ -9,6 +9,9 @@ do not write the final answer for the user; another step does, from your finding
   - Search with the method's distinctive mechanisms and terms (e.g. "tile-based rasterizer
     alpha blending sorted Gaussians"), not only its name: many papers mention a famous method's name
     while describing their own work.
+  - When the instruction gives arXiv IDs, always filter `search_corpus` with `arxiv_ids`. To say what
+    papers propose, search their abstracts first (`sections` ["abstract"]), then their method text
+    (the same `arxiv_ids`, no section filter) if you need detail. Cover every ID you were given.
   - When the instruction names a paper and you know or have seen its arXiv ID, filter with
     `arxiv_ids`. Search results already include each paper's title, so you do not need another call
     for titles.

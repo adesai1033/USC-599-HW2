@@ -14,6 +14,57 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Phase 4d: the `data` worker
+
+**Real schema** (checked with `describe_schema` and `run_sql` before writing the prompt):
+- `papers`: 220 rows (2020:14, 2021:40, 2022:21, 2023:43, 2024:61, 2025:40, 2026:1).
+- `authors`: 922 rows; `paper_authors`: 1,297 rows.
+- `results`: **0 rows**, so there are no benchmark or metric spellings yet.
+- Venues are full names ("Computer Vision and Pattern Recognition", 80 papers), not acronyms.
+- `results` has no unique key.
+
+**Built:**
+- **Citations:** a third type, `[db:<arxiv_id>]`, in `rag/citations.py` (parser, validator,
+  `[unverified]` marking). It's allowed for arXiv IDs that appear in a run's `run_sql` or
+  `get_paper_metadata` results, and gets its title from the row when there is one.
+- **`Finding`:** new `queries` field (the SQL that ran successfully). `grounded` is also true when a
+  query returned rows.
+- **`AgentSpec.max_tool_rounds`:** `data` uses 5.
+- **`data` registered** in `WORKERS`. `research`'s description now says it reads text and isn't for
+  counting or ranking.
+- **`prompts/data.md`:** written against the real schema, including the empty-`results` case and
+  `LIKE` for venues.
+- **Hand-offs:**
+  - Supervisor rule: pass every ID the next worker needs, not a sample. The routing rule is phrased
+    by description, without hard-coded worker names.
+  - Research rule: filter by the given `arxiv_ids`, abstracts first.
+  - The supervisor's view of each finding lists every paper it cited.
+- **Results seed:** `ingest/results_seed.csv` (header only) and `ingest/seed_results.py`.
+  - Checks: the ID is in `papers`, the value is numeric, the metric is known (any case),
+    `higher_is_better` is 0 or 1 and matches the metric's direction.
+  - Upserts on (arxiv_id, benchmark, scene, metric, setting) with `verified=1`, and is idempotent.
+  - Not run on the real index.
+- **CLI:** prints each data finding's SQL and labels db citations "(paper database)".
+
+**Found while running the done-when queries:**
+- "Most-cited 2024 papers and what each proposes": the supervisor passed only 4 of 10 IDs to
+  research. Synthesize then described papers 5–10 with only `[db:...]` citations, though the
+  database has titles, not methods.
+- Validation can't catch this, because the IDs were retrieved. I fixed it in the prompts:
+  - synthesize: a `[db:...]` citation supports only database facts;
+  - supervisor: pass every ID.
+- The re-run passed all 10 IDs, and every description has a chunk citation.
+
+**Verified:**
+- `pytest tests/` gives 117 passed, 2 skipped (11 new tests in `tests/test_data_worker.py`).
+- Real runs:
+  - most cited → data only;
+  - papers per year → data, with counts matching the database;
+  - most-cited 2024 + proposals → data → research → synthesize, with db and chunk citations;
+  - `DROP TABLE` → declined, row counts and file hash unchanged;
+  - "this month" → research.
+- No routing mistakes in these runs, and no unverified citations.
+
 ### 2026-10-22 — Phase 4c: robustness (the graph can't crash or cite unretrieved sources)
 
 **Built:**
