@@ -73,17 +73,27 @@ def main() -> None:
     wanted = {c["chunk_id"] for c in chunks}
     todo = [c for c in chunks if existing_hash.get(c["chunk_id"]) != text_hash(c["text"])]
     stale = [i for i in existing_hash if i not in wanted]
+    # Same text but changed metadata (title, page, ...): update the metadata without re-embedding.
+    existing_meta = dict(zip(existing["ids"], existing["metadatas"]))
+    todo_ids = {c["chunk_id"] for c in todo}
+    retag = [c for c in chunks if c["chunk_id"] not in todo_ids
+             and any(existing_meta[c["chunk_id"]].get(k) != c[k] for k in METADATA_FIELDS)]
 
     encoding = tiktoken.encoding_for_model(model)
     tokens = sum(len(encoding.encode(c["text"])) for c in todo)
-    logger.info("%d chunks: %d to embed (%d tokens, est. $%.4f), %d up to date, %d stale to delete",
-                len(chunks), len(todo), tokens, tokens / 1e6 * PRICE_PER_M_TOKENS,
-                len(chunks) - len(todo), len(stale))
+    logger.info("%d chunks: %d to embed (%d tokens, est. $%.4f), %d metadata-only updates, %d up to date, "
+                "%d stale to delete", len(chunks), len(todo), tokens, tokens / 1e6 * PRICE_PER_M_TOKENS,
+                len(retag), len(chunks) - len(todo) - len(retag), len(stale))
     if args.dry_run:
         return
 
     if stale:
         collection.delete(ids=stale)
+    if retag:
+        collection.update(
+            ids=[c["chunk_id"] for c in retag],
+            metadatas=[{**{k: c[k] for k in METADATA_FIELDS}, "text_sha": text_hash(c["text"])} for c in retag],
+        )
     embedder = OpenAIEmbeddings(model=model, max_retries=5)
     for start in range(0, len(todo), BATCH_SIZE):
         batch = todo[start:start + BATCH_SIZE]

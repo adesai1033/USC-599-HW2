@@ -71,7 +71,10 @@ def split_sentences(text: str) -> list[str]:
 
 
 def split_words(text: str, max_tokens: int) -> list[str]:
-    words, pieces, current = text.split(), [], []
+    limit = max_tokens * CHARS_PER_TOKEN
+    # A single "word" longer than a chunk (a URL, a run of symbols) is cut into chunk-sized pieces.
+    words = [w[i:i + limit] for w in text.split() for i in range(0, len(w), limit)]
+    pieces, current = [], []
     for word in words:
         if current and est_tokens(" ".join([*current, word])) > max_tokens:
             pieces.append(" ".join(current))
@@ -156,7 +159,10 @@ def chunk_paper(parsed: dict, meta: dict) -> list[dict]:
         paragraphs = []
         for p in section["paragraphs"]:
             # A subheading is folded into the next paragraph so it stays with its content.
-            if p.get("subheading"):
+            if p.get("subheading") and paragraphs and paragraphs[-1].get("subheading"):
+                # Two subheadings in a row: keep both.
+                paragraphs[-1] = {**paragraphs[-1], "text": f"{paragraphs[-1]['text']} {p['text']}."}
+            elif p.get("subheading"):
                 paragraphs.append({"text": p["text"] + ".", "page": p["page"], "subheading": True})
             elif paragraphs and paragraphs[-1].get("subheading"):
                 head = paragraphs.pop()

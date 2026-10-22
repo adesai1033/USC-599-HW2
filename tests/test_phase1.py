@@ -1,5 +1,7 @@
 import asyncio
+import io
 import json
+import logging
 
 import pytest
 from fastapi.testclient import TestClient
@@ -113,3 +115,31 @@ def test_missing_required_key_fails_fast(monkeypatch):
 
 def test_settings_repr_redacts_key():
     assert "test-google-key" not in repr(config.get_settings())
+
+
+@pytest.mark.parametrize("body", [
+    {"session_id": "s1", "message": "   \n "},       # whitespace only
+    {"session_id": "a/b", "message": "hi"},           # not a safe Firestore document ID
+    {"session_id": "s1", "message": "x" * 8001},
+])
+def test_invalid_requests_are_rejected_before_the_llm(monkeypatch, body):
+    def boom(tier):
+        raise AssertionError("invalid requests must not reach the LLM")
+
+    monkeypatch.setattr(main, "get_llm", boom)
+    with TestClient(main.app) as client:
+        assert client.post("/chat/stream", json=body).status_code == 422
+
+
+def test_provider_keys_are_redacted_from_every_log_handler(monkeypatch):
+    # uvicorn's loggers have their own handlers and don't propagate to root, so those need the filter too.
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    uvicorn_logger.addHandler(handler)
+    try:
+        with TestClient(main.app):
+            uvicorn_logger.error("provider rejected key test-google-key")
+    finally:
+        uvicorn_logger.removeHandler(handler)
+    assert "test-google-key" not in stream.getvalue() and "<redacted>" in stream.getvalue()

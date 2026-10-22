@@ -7,7 +7,9 @@ behind several independent guards: a single SELECT/WITH statement, a keyword che
 that permits only reads, a row cap and a time limit.
 """
 
+import asyncio
 import json
+import math
 import logging
 import os
 import re
@@ -23,9 +25,13 @@ from mcp.server.fastmcp.exceptions import ToolError
 ROOT = Path(__file__).resolve().parent.parent
 MAX_ROWS = 200
 MAX_SQL_CHARS = 5000
+MAX_VALUE_BYTES = 100_000  # SQLite refuses to build a longer string or blob, so a query can't exhaust memory
+MAX_CELL_CHARS = 1000
+MAX_RESPONSE_CHARS = 100_000
 QUERY_TIME_LIMIT_S = 2.0
 MAX_METADATA_IDS = 50
 ARXIV_ID = re.compile(r"^\d{4}\.\d{4,5}$")
+ARXIV_PREFIX = re.compile(r"^arxiv:", re.I)
 
 # Text inside string literals, quoted identifiers and comments is blanked before the keyword checks.
 LITERALS_AND_COMMENTS = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|`[^`]*`|\[[^\]]*\]|--[^\n]*|/\*.*?\*/", re.S)
@@ -85,6 +91,17 @@ def _authorizer(action: int, *_args) -> int:
     return sqlite3.SQLITE_OK if action in ALLOWED_ACTIONS else sqlite3.SQLITE_DENY
 
 
+def _cell(value: object) -> object:
+    """Make one result value JSON-safe and short: blobs are described, not dumped, and long text is cut."""
+    if isinstance(value, bytes):
+        return f"<blob, {len(value)} bytes>"
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, str) and len(value) > MAX_CELL_CHARS:
+        return value[:MAX_CELL_CHARS] + f"... [{len(value) - MAX_CELL_CHARS} more chars]"
+    return value
+
+
 @mcp.tool()
 def describe_schema() -> str:
     """Describe the paper database: every table with its columns, types and row count, plus notes on
@@ -102,22 +119,29 @@ def describe_schema() -> str:
 
 
 @mcp.tool()
-def run_sql(sql: str) -> str:
+async def run_sql(sql: str) -> str:
     """Run one read-only SQL query (SQLite dialect) against the paper database and return the rows.
 
     Use this for counts, rankings, filters and joins over paper metadata and benchmark results, e.g.
     the most-cited papers of a year, papers by an author, or the best PSNR on a benchmark. Call
     describe_schema first. Exactly one SELECT or WITH statement is allowed; PRAGMA, ATTACH and any
     statement that writes are rejected. At most 200 rows are returned ("truncated": true if more
-    matched) and a query is stopped after 2 seconds.
+    matched or the output got too large) and a query is stopped after 2 seconds. Text values
+    longer than 1000 characters are cut, and blobs are described rather than returned.
 
     Returns {"sql", "columns", "rows", "row_count", "truncated"}. Report the exact SQL you ran.
     To look up known papers by arXiv ID, get_paper_metadata is simpler.
     """
     statement = check_sql(sql)
+    # In a worker thread, so a slow query doesn't stall other calls on this server.
+    return await asyncio.to_thread(_run_sql, statement)
+
+
+def _run_sql(statement: str) -> str:
     deadline = time.monotonic() + QUERY_TIME_LIMIT_S
     conn = connect()
     try:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
         conn.set_authorizer(_authorizer)
         conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 10_000)
         cursor = conn.execute(statement)
@@ -133,12 +157,19 @@ def run_sql(sql: str) -> str:
         raise ToolError(f"SQL error: {exc}.") from exc
     finally:
         conn.close()
+    kept, size = [], 0
+    for row in rows[:MAX_ROWS]:
+        row = [_cell(v) for v in row]
+        size += len(as_json({"r": row}))
+        if size > MAX_RESPONSE_CHARS:
+            break
+        kept.append(row)
     return as_json({
         "sql": statement,
         "columns": columns,
-        "rows": [list(r) for r in rows[:MAX_ROWS]],
-        "row_count": min(len(rows), MAX_ROWS),
-        "truncated": len(rows) > MAX_ROWS,
+        "rows": kept,
+        "row_count": len(kept),
+        "truncated": len(rows) > len(kept),
     })
 
 
@@ -155,7 +186,7 @@ def get_paper_metadata(arxiv_ids: list[str]) -> str:
         raise ToolError("arxiv_ids must contain at least one ID.")
     if len(arxiv_ids) > MAX_METADATA_IDS:
         raise ToolError(f"get_paper_metadata accepts at most {MAX_METADATA_IDS} IDs, got {len(arxiv_ids)}.")
-    ids = list(dict.fromkeys(re.sub(r"v\d+$", "", i.strip().removeprefix("arXiv:")) for i in arxiv_ids))
+    ids = list(dict.fromkeys(re.sub(r"v\d+$", "", ARXIV_PREFIX.sub("", i.strip())) for i in arxiv_ids))
     malformed = [i for i in ids if not ARXIV_ID.match(i)]
     if malformed:
         raise ToolError(f"Malformed arXiv IDs {malformed}; expected the form 2308.04079.")

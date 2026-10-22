@@ -5,16 +5,18 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from config import get_settings
 from llm import get_llm
+from mcp_client import install_log_redaction
 from streaming import sse_event, with_heartbeat
 
 logger = logging.getLogger("paper_assistant")
@@ -32,6 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         level=settings.log_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    install_log_redaction()
     logger.info("starting with %r", settings)
     yield
 
@@ -40,8 +43,9 @@ app = FastAPI(title="3D Vision Paper Research Assistant", lifespan=lifespan)
 
 
 class ChatRequest(BaseModel):
-    session_id: str = Field(min_length=1, max_length=128)
-    message: str = Field(min_length=1, max_length=8000)
+    # session_id becomes a Firestore document ID, so it is limited to characters that are safe there.
+    session_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=8000)]
 
 
 def _ms_since(start: float) -> int:

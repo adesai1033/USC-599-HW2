@@ -14,6 +14,95 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Stress test of Phases 1–3, and fixes
+
+**How:** throwaway scripts (not committed) ran the real app under uvicorn with a fake model. They
+sent 60 concurrent streams, a client disconnect mid-stream, a slow first token, a provider error and
+malformed bodies. They also sent adversarial SQL to `run_sql`, odd inputs to the corpus tools over
+the real index (with fake query embeddings), and concurrency, crashes, hangs and oversized output
+through the MCP client.
+
+**Bugs found and fixed:**
+- **`run_sql`:**
+  - Blob values crashed the tool ("bytes is not JSON serializable"), and `1e999` produced
+    invalid JSON (`Infinity`).
+  - There was no size bound. `SELECT printf('%.*c', 3000000, 'x') FROM papers` built a 600 MB
+    response and reached 1.2 GB RSS, which would take down a 2 GiB instance.
+  - **Fix:** a SQLite value-length limit of 100 KB, text cells cut at 1,000 chars, blobs
+    described, and the response capped at 100k chars (marked `truncated`).
+- **`run_sql` blocking:** the tool was synchronous, so FastMCP ran it on the server's event loop
+  and one slow query stalled every other DB call for up to 2 s. It now runs in a worker thread.
+- **MCP client, restart race:** after a crash, 4 of 5 concurrent callers got "unavailable"
+  even though the restart succeeded. Callers now wait for a restart that is already in progress,
+  and restart locks are per server.
+- **MCP client, no retries for servers that never started:** a server that failed at startup
+  was never retried (e.g. Tavily during a cold-start network blip). The new `refresh()`, called
+  once per request from Phase 4, retries it in the background after the cooldown.
+- **MCP client, output size:** tool output was unbounded (20 MB passed straight through). It is
+  now cut at 100k chars.
+- **Redaction:** it covered only the Tavily key and was not installed in the app. An exception
+  message containing the Google key was logged verbatim. It now covers every provider key and
+  every handler, including uvicorn's, and `main.py` installs it at startup.
+- **Request validation:**
+  - A whitespace-only message passed and called the model.
+  - `session_id` accepted any characters, including `/`, and it becomes a Firestore document
+    ID in Phase 7.
+  - **Fix:** the message is stripped first, and `session_id` must match `[A-Za-z0-9_-]{1,128}`.
+- **Retriever temp copies:** the 116 MB temp copy of the index leaked whenever a corpus server
+  was killed rather than exiting normally, and on Cloud Run `/tmp` is memory. Copies are now
+  tagged with their process ID, and orphaned ones are removed at startup.
+- **Frontend:**
+  - `crypto.randomUUID` is missing outside HTTPS and localhost, which broke the whole script.
+  - The session ID changed on every reload.
+  - Over-long input showed "HTTP 422".
+  - **Fix:** a fallback ID kept in `sessionStorage`, `maxlength="8000"` on the input, and a
+    readable message for 422 responses.
+- **arXiv IDs:** an uppercase `ARXIV:` prefix was rejected as malformed. Normalization is now
+  case-insensitive in both servers.
+
+**Held up under load:** 60 concurrent streams all ended in `done`. A disconnect stopped generation
+after 3 of 40 tokens. Heartbeats arrived before a slow first token, and an error was followed by
+`done`. Path traversal returned 404. The SQL guard held (DELETE inside a CTE, `pragma_table_info`,
+`load_extension`). Timeouts and startup hangs were handled. All 4,867 chunk IDs match the
+`get_chunks` validator.
+
+**Ingest fixes (re-embed approved):** a review of `ingest/` against the shipped data found these:
+- **Bold table headers taken as section headings:** headers like "Method" started fake sections,
+  giving 111 duplicate-slug sections and junk table-header chunks. Once a paper uses numbered
+  headings, an unnumbered known heading is now accepted only for abstract, references,
+  acknowledgments or appendix, or right after references. A slug is never reopened.
+- **Body sentences filed as captions:** sentences like "Figure 3 shows..." went into captions.
+  The caption number must now be followed by a delimiter or a capitalized word. Roman-numeral
+  and letter numbers are still accepted.
+- **Acknowledgments indexed:** this covered singular spellings, run-in "Acknowledgements. We
+  thank..." (even mid-paragraph) and NeurIPS's "Acknowledgments and Disclosure of Funding".
+  More than 1,200 chars after an acknowledgments heading is kept as an unheaded appendix rather
+  than dropped.
+- **Affiliation lines taken as headings:** e.g. "1 The University of Tokyo 2 RIKEN AIP". In
+  front matter, only known headings are accepted now.
+- **Trailing hyphen in slugs:** truncation could leave one, producing `--` in chunk IDs.
+- **`chunk.py`:** a single over-long "word" is cut to chunk size, and two subheadings in a row
+  both keep their text.
+- **`embed.py`:** a metadata-only change now updates metadata without re-embedding.
+
+Before writing, the new parser was compared with the old one on all 220 papers:
+- body text +0.3%;
+- duplicate-slug sections 111 to 15 (the rest are real numbered repeats);
+- every paper's first section is now `introduction`;
+- the one paper that lost more than 10% lost only table-cell text.
+
+The re-run gave 4,741 chunks (was 4,867). 673 were embedded (294k tokens, about $0.006) and 296
+stale ones deleted. Chroma and `chunks.jsonl` hold identical ID sets. On the eval questions, a
+reference paper appears in the top 6 for 22 of 25 retrieval questions. q01 still ranks
+2403.17888 above the 3DGS paper, which matches the old index.
+
+**Known, not fixed:** a tool call still in flight when the client shuts down waits for the 60 s
+read timeout; this only matters at shutdown.
+
+**Verified:** `pytest tests/` gives 55 passed, 2 live tests skipped (12 new regression tests). The
+stress scripts were re-run and all issues above are resolved. The rebuilt image passes the
+in-container MCP check, and no index copy is left in `/tmp` after exit.
+
 ### 2026-10-21 — Phase 3: MCP servers and client
 
 **Dependencies (approved):** `mcp==1.30.0` and `langchain-mcp-adapters==0.3.2`. The latest

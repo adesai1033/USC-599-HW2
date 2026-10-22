@@ -4,7 +4,9 @@ Client tests spawn real stdio servers: papers_db over a temporary database, and
 tests/fixtures/fake_server.py standing in for corpus and Tavily. No network access is needed.
 """
 
+import asyncio
 import io
+import os
 import json
 import logging
 import sqlite3
@@ -13,12 +15,14 @@ from pathlib import Path
 
 import pytest
 from langchain_core.embeddings import DeterministicFakeEmbedding
+from mcp.types import CallToolResult, TextContent
 from langchain_chroma import Chroma
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_client
 from agents.registry import AGENTS
 from mcp_servers import corpus, papers_db
+from rag import retriever
 
 ROOT = Path(__file__).resolve().parent.parent
 FAKE_SERVER = str(ROOT / "tests" / "fixtures" / "fake_server.py")
@@ -91,6 +95,10 @@ def papers_db_manifest() -> dict:
                           "papers_db is unavailable.", env=["PAPERS_DB_PATH"])
 
 
+def run_sql(sql: str) -> str:
+    return asyncio.run(papers_db.run_sql(sql))
+
+
 async def call(tool, **args):
     msg = await tool.ainvoke({"type": "tool_call", "id": "t1", "name": tool.name, "args": args})
     text = msg.content if isinstance(msg.content, str) else "".join(b.get("text", "") for b in msg.content)
@@ -115,31 +123,58 @@ async def call(tool, **args):
 ])
 def test_run_sql_rejects_non_select(papers_sqlite, sql):
     with pytest.raises(ToolError):
-        papers_db.run_sql(sql)
+        run_sql(sql)
     with sqlite3.connect(papers_sqlite) as conn:
         assert conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 3
 
 
 def test_run_sql_allows_keywords_inside_strings_and_functions(papers_sqlite):
-    out = json.loads(papers_db.run_sql("SELECT replace(title, 'NeRF', 'DROP TABLE') AS t FROM papers WHERE arxiv_id = '2003.08934';"))
+    out = json.loads(run_sql("SELECT replace(title, 'NeRF', 'DROP TABLE') AS t FROM papers WHERE arxiv_id = '2003.08934';"))
     assert out["rows"] == [["DROP TABLE"]]
 
 
 def test_run_sql_rejects_extension_loading(papers_sqlite):
     # Passes the text check (a plain SELECT), but SQLite refuses load_extension on this connection.
     with pytest.raises(ToolError):
-        papers_db.run_sql("SELECT load_extension('x')")
+        run_sql("SELECT load_extension('x')")
 
 
 def test_run_sql_caps_rows(papers_sqlite):
-    out = json.loads(papers_db.run_sql("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 500) SELECT i FROM n"))
+    out = json.loads(run_sql("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 500) SELECT i FROM n"))
     assert out["row_count"] == papers_db.MAX_ROWS and out["truncated"] is True
 
 
 def test_run_sql_aborts_long_queries(papers_sqlite, monkeypatch):
     monkeypatch.setattr(papers_db, "QUERY_TIME_LIMIT_S", 0.2)
     with pytest.raises(ToolError, match="stopped"):
-        papers_db.run_sql("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT COUNT(*) FROM n")
+        run_sql("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT COUNT(*) FROM n")
+
+
+def test_run_sql_returns_json_safe_values(papers_sqlite):
+    out = json.loads(run_sql("SELECT randomblob(4), 1e999, printf('%.*c', 5000, 'x')"))
+    blob, inf, text = out["rows"][0]
+    assert blob == "<blob, 4 bytes>" and inf == "inf"
+    assert text.startswith("x" * papers_db.MAX_CELL_CHARS) and "more chars" in text
+
+
+def test_run_sql_bounds_memory_and_output_size(papers_sqlite):
+    with pytest.raises(ToolError, match="too big"):
+        run_sql("SELECT printf('%.*c', 400000000, 'x')")  # 400 MB string, refused by SQLite
+    out = run_sql("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200) "
+                  "SELECT printf('%.*c', 900, 'x'), printf('%.*c', 900, 'y') FROM n")
+    assert len(out) < papers_db.MAX_RESPONSE_CHARS + 1000
+    assert json.loads(out)["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_slow_query_does_not_block_other_calls(papers_sqlite, monkeypatch):
+    monkeypatch.setattr(papers_db, "QUERY_TIME_LIMIT_S", 1.0)
+    slow = asyncio.create_task(papers_db.run_sql("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT COUNT(*) FROM n"))
+    await asyncio.sleep(0.1)
+    fast = await asyncio.wait_for(papers_db.run_sql("SELECT COUNT(*) FROM papers"), 0.5)
+    assert json.loads(fast)["rows"] == [[3]] and not slow.done()
+    with pytest.raises(ToolError, match="stopped"):
+        await slow
 
 
 @pytest.mark.parametrize("metric, expected_order", [
@@ -149,7 +184,7 @@ def test_run_sql_aborts_long_queries(papers_sqlite, monkeypatch):
 def test_metric_ranking_respects_higher_is_better(papers_sqlite, metric, expected_order):
     sql = ("SELECT arxiv_id FROM results WHERE benchmark = 'Mip-NeRF 360' AND metric = '%s' AND scene IS NULL "
            "ORDER BY CASE WHEN higher_is_better = 1 THEN -value ELSE value END" % metric)
-    assert [r[0] for r in json.loads(papers_db.run_sql(sql))["rows"]] == expected_order
+    assert [r[0] for r in json.loads(run_sql(sql))["rows"]] == expected_order
 
 
 def test_describe_schema_lists_tables_and_ranking_notes(papers_sqlite):
@@ -164,6 +199,7 @@ def test_get_paper_metadata_resolves_ids_and_reports_missing(papers_sqlite):
     assert [p["arxiv_id"] for p in out["papers"]] == ["2003.08934"]
     assert out["papers"][0]["authors"] == ["Pratul Srinivasan", "Ben Mildenhall"]  # byline order, not id order
     assert out["missing"] == ["9999.99999"]
+    assert json.loads(papers_db.get_paper_metadata(["ARXIV:2003.08934"]))["papers"][0]["arxiv_id"] == "2003.08934"
     with pytest.raises(ToolError):
         papers_db.get_paper_metadata(["not-an-id"])
 
@@ -291,6 +327,55 @@ async def test_server_crash_mid_call_is_graceful_and_restarts(monkeypatch):
         await tools.aclose()
 
 
+@pytest.mark.asyncio
+async def test_concurrent_calls_after_a_crash_wait_for_one_restart(monkeypatch):
+    monkeypatch.setattr(mcp_client, "RESTART_COOLDOWN_S", 0.0)
+    tools = mcp_client.MCPTools({"fake": stdio_manifest(FAKE_SERVER, ["echo", "crash"], "Fake server is unavailable.")})
+    await tools.start()
+    try:
+        await call(tools._tools["crash"])
+        results = await asyncio.gather(*(call(tools._tools["echo"], text=str(i)) for i in range(5)))
+        assert results == [("success", str(i)) for i in range(5)]
+        assert len(tools._tasks) == 1
+    finally:
+        await tools.aclose()
+
+
+@pytest.mark.asyncio
+async def test_refresh_retries_a_server_that_never_started(monkeypatch):
+    monkeypatch.setattr(mcp_client, "RESTART_COOLDOWN_S", 0.0)
+    manifest = {**stdio_manifest(FAKE_SERVER, ["echo"], "Fake server is unavailable."), "command": "definitely-not-a-real-command"}
+    tools = mcp_client.MCPTools({"fake": manifest})
+    await tools.start()
+    try:
+        assert tools.status["fake"].state == "down" and "echo" not in tools._tools
+        manifest["command"] = "python"  # the failure was transient
+        tools.refresh()
+        await asyncio.gather(*tools._background)
+        assert tools.status["fake"].state == "up"
+        assert await call(tools._tools["echo"], text="hi") == ("success", "hi")
+    finally:
+        await tools.aclose()
+
+
+def test_oversized_tool_output_is_truncated():
+    result = mcp_client._cap(CallToolResult(content=[TextContent(type="text", text="x" * (mcp_client.MAX_RESULT_CHARS + 50))]))
+    assert len(result.content[0].text) < mcp_client.MAX_RESULT_CHARS + 100
+    assert result.content[0].text.endswith("[truncated 50 chars]")
+
+
+# ---------------------------------------------------------------- retriever
+
+def test_orphaned_index_copies_are_removed(tmp_path, monkeypatch):
+    monkeypatch.setattr(retriever.tempfile, "gettempdir", lambda: str(tmp_path))
+    dead = tmp_path / "chroma-999999999-abc"   # no such process
+    alive = tmp_path / f"chroma-{os.getppid()}-abc"
+    for d in (dead, alive):
+        d.mkdir()
+    retriever._remove_orphaned_copies()
+    assert not dead.exists() and alive.exists()
+
+
 # ---------------------------------------------------------------- redaction
 
 def test_redact_removes_key_from_urls_and_bare_text(monkeypatch):
@@ -298,6 +383,13 @@ def test_redact_removes_key_from_urls_and_bare_text(monkeypatch):
     text = f"GET https://mcp.tavily.com/mcp/?tavilyApiKey={SECRET}&x=1 failed; key was {SECRET}"
     clean = mcp_client.redact(text)
     assert SECRET not in clean and "tavilyApiKey=<redacted>&x=1" in clean
+
+
+def test_redact_covers_every_provider_key(monkeypatch):
+    for i, name in enumerate(mcp_client.SECRET_ENV_VARS):
+        monkeypatch.setenv(name, f"secret-value-{i}-0123456789")
+    text = " ".join(f"secret-value-{i}-0123456789" for i in range(len(mcp_client.SECRET_ENV_VARS)))
+    assert "secret-value" not in mcp_client.redact(text)
 
 
 @pytest.mark.asyncio

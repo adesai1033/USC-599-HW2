@@ -2,7 +2,8 @@
 
 The index built by ingest/embed.py is opened from a private temporary copy. Chroma writes to its
 directory when it opens a collection, and the index baked into the image is read-only, so the
-shipped files are never opened directly.
+shipped files are never opened directly. Each copy is tagged with its process ID, and copies left
+behind by a process that was killed are removed (on Cloud Run /tmp is memory, so they would add up).
 """
 
 import atexit
@@ -29,12 +30,26 @@ class SearchRequest:
     sections: tuple[str, ...] = ()
 
 
+def _remove_orphaned_copies() -> None:
+    for path in Path(tempfile.gettempdir()).glob("chroma-*-*"):
+        pid = path.name.split("-")[1]
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            shutil.rmtree(path, ignore_errors=True)
+        except PermissionError:
+            pass  # the process exists but belongs to another user
+
+
 def open_store(embeddings: Embeddings, persist_dir: str | Path | None = None) -> Chroma:
     """Open the chunk collection from a temporary copy of `persist_dir` (default CHROMA_PERSIST_DIR)."""
     source = Path(persist_dir or ROOT / os.environ.get("CHROMA_PERSIST_DIR", "index/chroma")).resolve()
     if not (source / "chroma.sqlite3").exists():
         raise FileNotFoundError(f"no Chroma index at {source}; run ingest/embed.py")
-    workdir = tempfile.mkdtemp(prefix="chroma-")
+    _remove_orphaned_copies()
+    workdir = tempfile.mkdtemp(prefix=f"chroma-{os.getpid()}-")
     atexit.register(shutil.rmtree, workdir, ignore_errors=True)
     copy = Path(workdir) / "chroma"
     shutil.copytree(source, copy)

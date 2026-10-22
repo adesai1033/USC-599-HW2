@@ -1,6 +1,22 @@
 "use strict";
 
-const sessionId = crypto.randomUUID();
+// One session per tab, kept across reloads. crypto.randomUUID exists only on HTTPS and localhost.
+function newSessionId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function loadSessionId() {
+  try {
+    const id = sessionStorage.getItem("session_id") || newSessionId();
+    sessionStorage.setItem("session_id", id);
+    return id;
+  } catch {
+    return newSessionId();
+  }
+}
+
+const sessionId = loadSessionId();
 
 const messagesEl = document.getElementById("messages");
 const form = document.getElementById("composer");
@@ -69,6 +85,9 @@ async function streamAnswer(message, answerEl) {
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify({ session_id: sessionId, message }),
   });
+  if (response.status === 422) {
+    throw new Error("That message can't be sent. Keep it under 8,000 characters.");
+  }
   if (!response.ok || !response.body) {
     throw new Error(`Request failed (HTTP ${response.status})`);
   }

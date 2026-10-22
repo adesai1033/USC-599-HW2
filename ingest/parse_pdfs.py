@@ -60,6 +60,9 @@ KNOWN_HEADINGS = {
     "conclusion and future work": "conclusion",
     "acknowledgments": "acknowledgments",
     "acknowledgements": "acknowledgments",
+    "acknowledgment": "acknowledgments",
+    "acknowledgement": "acknowledgments",
+    "acknowledgments and disclosure of funding": "acknowledgments",
     "references": "references",
     "bibliography": "references",
     "appendix": "appendix",
@@ -67,9 +70,17 @@ KNOWN_HEADINGS = {
     "supplementary": "appendix",
 }
 DROP_SECTIONS = {"abstract", "references", "acknowledgments"}
+# Once a paper has numbered sections, an unnumbered known heading is accepted only for these. Others
+# ("Method", "Results") are then almost always bold table headers, not section headings.
+UNNUMBERED_SECTIONS = {"abstract", "references", "acknowledgments", "appendix"}
+MAX_ACKNOWLEDGMENTS_CHARS = 1200  # beyond this, text after an acknowledgments heading is an unheaded appendix
 
 NUMBERED_HEADING = re.compile(r"^(?P<num>(\d{1,2}|[A-H]|[IVX]{1,5})(\.\d{1,2}){0,2})\.?\s+(?P<title>[A-Z][^\n]{1,80})$")
-CAPTION = re.compile(r"^(Figure|Fig\.|Table)\s*[0-9A-Z]+[.:]?\s", re.IGNORECASE)
+# "Figure 3." / "Fig. 3:" / "Table A1 |" / "TABLE XIII:" / "Figure B:" / "Figure 2 Overview of ...". The number must be
+# followed by a delimiter or a capitalized word, so body text like "Figure 3 shows..." is not taken as a caption.
+CAPTION = re.compile(r"^(?i:Figure|Fig\.|Table)\s*(?:(?:[A-Z]\.?)?\d+[a-z]?|[IVXL]+|[A-Z])(?:\s*[.:|]\s|\s+[A-Z])")
+# A run-in "Acknowledgements. We thank..." (any spelling, delimiter optional), at a paragraph start or after a sentence.
+ACKNOWLEDGMENTS_RUN_IN = re.compile(r"(?:^|(?<=[.!?])\s+)Ackn\w*ments?\b\s*[.:]?\s+(?=[A-Z])")
 ARXIV_STAMP = re.compile(r"arXiv:\d{4}\.\d{4,5}(v\d+)?\s*\[")
 PAGE_NUMBER = re.compile(r"^\d{1,3}$")
 WORD = re.compile(r"[A-Za-z]{3,}")
@@ -80,7 +91,7 @@ logger = logging.getLogger("parse_pdfs")
 
 
 def slugify(title: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40] or "section"
+    return re.sub(r"[^a-z0-9]+", "-", title.lower())[:40].strip("-") or "section"
 
 
 def clean(text: str) -> str:
@@ -146,13 +157,16 @@ def reading_order(blocks: list[dict], page_width: float) -> list[dict]:
     return ordered
 
 
-def classify_heading(line: dict, body_size: float) -> tuple[str, str, int] | None:
-    """Return (slug, heading title, level) if this line looks like a section heading."""
+def classify_heading(line: dict, body_size: float) -> tuple[str, str, int, bool] | None:
+    """Return (slug, heading title, level, numbered) if this line looks like a section heading."""
     text = line["text"].strip()
-    if len(text) > 90 or text.endswith((",", ";")) or (text.endswith(".") and not SECTION_NUMBER.match(text)):
-        return None
     match = NUMBERED_HEADING.match(text)
     title = (match["title"] if match else text).strip().rstrip(":.")
+    # A trailing period usually means a sentence, except on a known heading like "Acknowledgements."
+    if len(text) > 90 or text.endswith((",", ";")) or (
+        text.endswith(".") and not SECTION_NUMBER.match(text) and title.lower() not in KNOWN_HEADINGS
+    ):
+        return None
     if len(title) < 4 or not WORD.search(title) or sum(c.isalpha() or c == " " for c in title) < 0.8 * len(title):
         return None
     emphasized = line["bold"] or line["size"] >= body_size + 0.8 or (title.isupper() and len(title) > 3)
@@ -161,9 +175,9 @@ def classify_heading(line: dict, body_size: float) -> tuple[str, str, int] | Non
     known = KNOWN_HEADINGS.get(title.lower())
     if match:
         level = 1 if match["num"][0].isalpha() and "." not in match["num"] else match["num"].count(".") + 1
-        return known or slugify(title), title, level
+        return known or slugify(title), title, level, True
     if known:
-        return known, title, 1
+        return known, title, 1, False
     return None
 
 
@@ -222,11 +236,33 @@ def parse_pdf(path: Path, title: str, abstract: str) -> dict:
     captions: list[dict] = []
     stats: Counter = Counter()
     current = {"section": "front-matter", "heading": None, "paragraphs": []}
+    used_slugs: set[str] = set()
+    numbered_seen = False
+
+    def accept(slug: str, level: int, numbered: bool) -> bool:
+        """Reject headings that the layout alone can't tell apart from table headers or affiliations."""
+        if current["section"] == "front-matter" and slug not in KNOWN_HEADINGS.values():
+            return False  # e.g. "1 The University of Tokyo 2 RIKEN AIP" above the abstract
+        if not numbered:
+            # After references, unnumbered appendix headings are real: tables don't live in the bibliography.
+            return slug not in used_slugs and (
+                not numbered_seen or slug in UNNUMBERED_SECTIONS or current["section"] in DROP_SECTIONS
+            )
+        return True
 
     def add_paragraph(lines: list[str], page_no: int) -> None:
+        nonlocal current
         text = clean("\n".join(lines))
         if not text:
             return
+        run_in = ACKNOWLEDGMENTS_RUN_IN.search(text)
+        if run_in:
+            # "...future work. Acknowledgements: We thank..." with no heading line of its own.
+            if text[:run_in.start()].strip():
+                current["paragraphs"].append({"text": text[:run_in.start()].strip(), "page": page_no})
+            sections.append(current)
+            current = {"section": "acknowledgments", "heading": None, "paragraphs": []}
+            text = text[run_in.start():].strip()
         if is_equation_fragment(text):
             stats["equation_fragments"] += 1
         else:
@@ -253,15 +289,20 @@ def parse_pdf(path: Path, title: str, abstract: str) -> dict:
             buffer: list[str] = []
             for line in block_lines(block):
                 heading = classify_heading(line, body_size)
+                if heading and not accept(heading[0], heading[2], heading[3]):
+                    stats["rejected_headings"] += 1
+                    heading = None
                 if not heading:
                     buffer.append(line["text"])
                     continue
                 add_paragraph(buffer, page_no)
                 buffer = []
-                slug, heading_title, level = heading
+                slug, heading_title, level, numbered = heading
                 if level == 1 or current["section"] == "front-matter":
                     sections.append(current)
                     current = {"section": slug, "heading": heading_title, "paragraphs": []}
+                    used_slugs.add(slug)
+                    numbered_seen = numbered_seen or numbered
                     stats["headings"] += 1
                 else:
                     current["paragraphs"].append({"text": heading_title, "page": page_no, "subheading": True})
@@ -272,6 +313,16 @@ def parse_pdf(path: Path, title: str, abstract: str) -> dict:
 
     kept = []
     for section in sections:
+        if section["section"] == "acknowledgments":
+            seen, cut = 0, len(section["paragraphs"])
+            for j, paragraph in enumerate(section["paragraphs"]):
+                seen += len(paragraph["text"])
+                if seen > MAX_ACKNOWLEDGMENTS_CHARS and j > 0:
+                    cut = j
+                    break
+            if cut < len(section["paragraphs"]):
+                kept.append({"section": "appendix", "heading": None, "paragraphs": section["paragraphs"][cut:]})
+                stats["appendix_after_acknowledgments"] = 1
         if section["section"] in DROP_SECTIONS or section["section"] == "front-matter":
             stats[f"dropped_{section['section']}"] += 1
             continue

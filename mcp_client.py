@@ -9,8 +9,9 @@ Every tool call goes through an interceptor that sends it on the server's curren
 the server is down, the call returns the manifest's "description" as a tool error instead of
 raising, and a server that was up and then disconnected is restarted on a later call.
 
-The Tavily URL carries the API key as a query parameter. It is built here from TAVILY_API_KEY and
-redacted from every log record by install_log_redaction(); failure messages are redacted too.
+The Tavily URL carries the API key as a query parameter. It is built here from TAVILY_API_KEY.
+install_log_redaction() removes it, and every other provider key, from all log output; failure
+messages are redacted too.
 """
 
 import asyncio
@@ -39,6 +40,8 @@ ROOT = Path(__file__).resolve().parent
 START_TIMEOUT_S = 30.0
 CALL_TIMEOUT_S = 60.0
 RESTART_COOLDOWN_S = 30.0
+MAX_RESULT_CHARS = 100_000  # longer tool output is cut before it reaches a model
+SECRET_ENV_VARS = ("TAVILY_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY")
 REQUEST_TIMEOUT_CODE = 408  # McpError code the MCP SDK uses for a request that timed out
 
 ENV_REF = re.compile(r"\$\{([A-Z0-9_]+)\}")
@@ -48,10 +51,13 @@ logger = logging.getLogger("mcp_client")
 
 
 def redact(text: str) -> str:
-    """Remove the Tavily key from text, whether it appears as a query parameter or on its own."""
+    """Remove API keys from text: the Tavily key as a query parameter, and any provider key on its own."""
     text = SECRET_PARAM.sub(r"\1<redacted>", text)
-    key = os.environ.get("TAVILY_API_KEY", "")
-    return text.replace(key, "<redacted>") if len(key) >= 8 else text
+    for name in SECRET_ENV_VARS:
+        key = os.environ.get(name, "")
+        if len(key) >= 8:
+            text = text.replace(key, "<redacted>")
+    return text
 
 
 class RedactingFilter(logging.Filter):
@@ -68,8 +74,9 @@ class RedactingFilter(logging.Filter):
 
 
 def install_log_redaction() -> None:
-    """Attach RedactingFilter to every root handler. Call after logging is configured."""
-    for handler in logging.getLogger().handlers:
+    """Attach RedactingFilter to every handler, including uvicorn's own. Call after logging is configured."""
+    loggers = [logging.getLogger(), *(l for l in logging.root.manager.loggerDict.values() if isinstance(l, logging.Logger))]
+    for handler in {h for lg in loggers for h in lg.handlers}:
         if not any(isinstance(f, RedactingFilter) for f in handler.filters):
             handler.addFilter(RedactingFilter())
 
@@ -119,6 +126,15 @@ def _error_result(text: str) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
 
 
+def _cap(result: CallToolResult) -> CallToolResult:
+    """Cut text content beyond MAX_RESULT_CHARS so one oversized result can't flood a model's context."""
+    for block in result.content:
+        if isinstance(block, TextContent) and len(block.text) > MAX_RESULT_CHARS:
+            cut = len(block.text) - MAX_RESULT_CHARS
+            block.text = block.text[:MAX_RESULT_CHARS] + f"\n... [truncated {cut} chars]"
+    return result
+
+
 class MCPTools:
     """Persistent sessions to every configured MCP server, and the tools each agent may use."""
 
@@ -132,7 +148,8 @@ class MCPTools:
         self._tools: dict[str, BaseTool] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._stop = asyncio.Event()
-        self._restart_lock = asyncio.Lock()
+        self._restart_locks = {name: asyncio.Lock() for name in self.manifests}
+        self._background: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         """Connect to every server concurrently. Failures are recorded in status, never raised."""
@@ -202,8 +219,20 @@ class MCPTools:
         self._sessions.pop(name, None)
         logger.warning("MCP server %r is down: %s", name, status.error)
 
+    def refresh(self) -> None:
+        """Retry, in the background, every server that is down and past its cooldown.
+
+        Call once per request: a server that failed at startup (e.g. Tavily during a network blip
+        on a cold start) then comes back without waiting for the instance to be replaced.
+        """
+        for name, status in self.status.items():
+            if status.state == "down" and time.monotonic() - status.last_attempt >= RESTART_COOLDOWN_S:
+                task = asyncio.create_task(self._restart(name))
+                self._background.add(task)
+                task.add_done_callback(self._background.discard)
+
     async def _restart(self, name: str) -> None:
-        async with self._restart_lock:
+        async with self._restart_locks[name]:
             status = self.status[name]
             if status.state == "up" or time.monotonic() - status.last_attempt < RESTART_COOLDOWN_S:
                 return
@@ -216,13 +245,13 @@ class MCPTools:
     async def _call(self, request: MCPToolCallRequest, _handler) -> CallToolResult:
         """Interceptor for every tool call: route to the server's current session, never raise."""
         name, status = request.server_name, self.status[request.server_name]
-        if status.state == "down" and status.was_up:
-            await self._restart(name)
+        if status.was_up and status.state != "up":
+            await self._restart(name)  # also waits out a restart another call already started
         session = self._sessions.get(name)
         if session is None:
             return _error_result(status.description)
         try:
-            return await session.call_tool(request.name, request.args)
+            return _cap(await session.call_tool(request.name, request.args))
         except McpError as exc:
             if exc.error.code == REQUEST_TIMEOUT_CODE:
                 return _error_result(f"{request.name} timed out after {CALL_TIMEOUT_S:.0f} s; try a narrower request.")
@@ -242,6 +271,8 @@ class MCPTools:
         return [s.description for s in self.status.values() if s.state != "up" and s.tools & allowed]
 
     async def aclose(self) -> None:
+        for task in self._background:
+            task.cancel()
         self._stop.set()
         tasks = list(self._tasks.values())
         if tasks:

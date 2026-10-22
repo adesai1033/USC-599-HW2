@@ -69,7 +69,7 @@ def as_json(payload: dict) -> str:
 
 def normalize_arxiv_id(raw: str) -> str:
     """'arXiv:2308.04079v2' -> '2308.04079'."""
-    return re.sub(r"v\d+$", "", raw.strip().removeprefix("arXiv:").removeprefix("arxiv:"))
+    return re.sub(r"v\d+$", "", re.sub(r"^arxiv:", "", raw.strip(), flags=re.I))
 
 
 def validate_arxiv_ids(raw: list[str] | None) -> tuple[str, ...]:
