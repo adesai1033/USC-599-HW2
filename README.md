@@ -75,6 +75,22 @@ Model IDs verified against the provider docs on 2026-10-21:
 | `OPENAI_MODEL` | `gpt-6.1-sol` | https://developers.openai.com/api/docs/models |
 | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | https://developers.openai.com/api/docs/models |
 
+## MCP servers
+
+Three servers, declared in `mcp_config.json` (path in `MCP_SERVERS_CONFIG`) and connected by
+`mcp_client.py` through `MultiServerMCPClient`, one persistent session per server:
+
+| Server | Transport | Tools | Source |
+|---|---|---|---|
+| `corpus` | stdio | `search_corpus`, `get_chunks` | ours, `mcp_servers/corpus.py` |
+| `papers_db` | stdio | `describe_schema`, `run_sql`, `get_paper_metadata` | ours, `mcp_servers/papers_db.py` |
+| `tavily` | streamable HTTP | `tavily_search`, `tavily_extract` | Tavily Remote MCP (see Attribution) |
+
+Each of our servers runs standalone: `python mcp_servers/corpus.py` (needs `OPENAI_API_KEY` to
+embed queries) or `python mcp_servers/papers_db.py`. Tests: `pytest tests/` runs offline;
+`RUN_LIVE=1 pytest tests/test_phase3_live.py` calls every tool against the real servers and
+Tavily (about two Tavily credits).
+
 ## Ingestion
 
 ## Architecture
@@ -86,3 +102,7 @@ Model IDs verified against the provider docs on 2026-10-21:
 ## Fresh GCP project setup
 
 ## Attribution
+
+- **Tavily Remote MCP server** (`https://mcp.tavily.com/mcp/`), the official hosted MCP server
+  from Tavily, provides live web search (`tavily_search`) and page extraction (`tavily_extract`).
+  We use it unmodified; the API key is passed in the `tavilyApiKey` query parameter.

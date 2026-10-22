@@ -7,3 +7,5 @@ python-dotenv==1.2.4
 langchain-openai==1.7.2
 langchain-chroma==1.1.0
 chromadb==1.5.9
+mcp==1.30.0
+langchain-mcp-adapters==0.3.2

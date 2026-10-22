@@ -1,1 +1,252 @@
-"""MultiServerMCPClient setup, persistent sessions, discovery, per-agent filtering, failure handling."""
+"""MultiServerMCPClient setup, persistent sessions, discovery, per-agent filtering, failure handling.
+
+Each server in MCP_SERVERS_CONFIG (default mcp_config.json) gets one long-lived session, opened in
+its own task so that a server that fails to start, crashes or disconnects never affects the
+others. Tools are discovered once per session and exposed only if the manifest's "tools" list
+names them; agents then receive only the tools in their allowlist in agents/registry.py.
+
+Every tool call goes through an interceptor that sends it on the server's current session. If
+the server is down, the call returns the manifest's "description" as a tool error instead of
+raising, and a server that was up and then disconnected is restarted on a later call.
+
+The Tavily URL carries the API key as a query parameter. It is built here from TAVILY_API_KEY and
+redacted from every log record by install_log_redaction(); failure messages are redacted too.
+"""
+
+import asyncio
+import json
+import logging
+import os
+import re
+import sys
+import time
+from dataclasses import dataclass
+from datetime import timedelta
+from pathlib import Path
+from typing import Literal
+
+from langchain_core.tools import BaseTool
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.interceptors import MCPToolCallRequest
+from langchain_mcp_adapters.tools import load_mcp_tools
+from mcp import ClientSession
+from mcp.shared.exceptions import McpError
+from mcp.types import CallToolResult, TextContent
+
+from agents.registry import AGENTS
+
+ROOT = Path(__file__).resolve().parent
+START_TIMEOUT_S = 30.0
+CALL_TIMEOUT_S = 60.0
+RESTART_COOLDOWN_S = 30.0
+REQUEST_TIMEOUT_CODE = 408  # McpError code the MCP SDK uses for a request that timed out
+
+ENV_REF = re.compile(r"\$\{([A-Z0-9_]+)\}")
+SECRET_PARAM = re.compile(r"(tavilyApiKey=)[^&\s'\"<>]+", re.I)
+
+logger = logging.getLogger("mcp_client")
+
+
+def redact(text: str) -> str:
+    """Remove the Tavily key from text, whether it appears as a query parameter or on its own."""
+    text = SECRET_PARAM.sub(r"\1<redacted>", text)
+    key = os.environ.get("TAVILY_API_KEY", "")
+    return text.replace(key, "<redacted>") if len(key) >= 8 else text
+
+
+class RedactingFilter(logging.Filter):
+    """Redacts secrets from a record's message and traceback before any handler formats it."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        clean = redact(message)
+        if clean != message:
+            record.msg, record.args = clean, None
+        if record.exc_info and not record.exc_text:
+            record.exc_text = redact(logging.Formatter().formatException(record.exc_info))
+        return True
+
+
+def install_log_redaction() -> None:
+    """Attach RedactingFilter to every root handler. Call after logging is configured."""
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(f, RedactingFilter) for f in handler.filters):
+            handler.addFilter(RedactingFilter())
+
+
+@dataclass
+class ServerStatus:
+    name: str
+    description: str
+    tools: frozenset[str]
+    state: Literal["starting", "up", "down"] = "starting"
+    error: str | None = None
+    was_up: bool = False
+    last_attempt: float = 0.0
+
+
+def load_manifests(path: str | Path | None = None) -> dict[str, dict]:
+    path = Path(path or os.environ.get("MCP_SERVERS_CONFIG") or ROOT / "mcp_config.json")
+    if not path.is_absolute():
+        path = ROOT / path
+    return json.loads(path.read_text())
+
+
+def _expand(value: str) -> str:
+    def lookup(match: re.Match) -> str:
+        if not os.environ.get(match.group(1)):
+            raise ValueError(f"environment variable {match.group(1)} is not set")
+        return os.environ[match.group(1)]
+
+    return ENV_REF.sub(lookup, value)
+
+
+def build_connection(manifest: dict) -> dict:
+    """Turn one manifest into a langchain-mcp-adapters connection dict."""
+    session_kwargs = {"read_timeout_seconds": timedelta(seconds=CALL_TIMEOUT_S)}
+    if manifest["transport"] == "stdio":
+        # "python" means this interpreter, so servers run in the same venv as the app.
+        command = sys.executable if manifest["command"] == "python" else manifest["command"]
+        env = {k: os.environ[k] for k in manifest.get("env_passthrough", []) if k in os.environ}
+        return {"transport": "stdio", "command": command, "args": manifest.get("args", []),
+                "env": env, "cwd": str(ROOT), "session_kwargs": session_kwargs}
+    if manifest["transport"] == "streamable_http":
+        return {"transport": "streamable_http", "url": _expand(manifest["url"]), "session_kwargs": session_kwargs}
+    raise ValueError(f"unsupported transport {manifest['transport']!r}")
+
+
+def _error_result(text: str) -> CallToolResult:
+    return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
+
+
+class MCPTools:
+    """Persistent sessions to every configured MCP server, and the tools each agent may use."""
+
+    def __init__(self, manifests: dict[str, dict] | None = None) -> None:
+        self.manifests = manifests if manifests is not None else load_manifests()
+        self.status = {
+            name: ServerStatus(name, m["description"], frozenset(m.get("tools", [])))
+            for name, m in self.manifests.items()
+        }
+        self._sessions: dict[str, ClientSession] = {}
+        self._tools: dict[str, BaseTool] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._stop = asyncio.Event()
+        self._restart_lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        """Connect to every server concurrently. Failures are recorded in status, never raised."""
+        await asyncio.gather(*(self._connect(name) for name in self.manifests))
+        up = [n for n, s in self.status.items() if s.state == "up"]
+        down = {n: s.error for n, s in self.status.items() if s.state == "down"}
+        logger.info("MCP servers up: %s; down: %s; tools: %s", up, down or "none", sorted(self._tools))
+
+    async def _connect(self, name: str) -> None:
+        status = self.status[name]
+        status.state, status.error, status.last_attempt = "starting", None, time.monotonic()
+        try:
+            connection = build_connection(self.manifests[name])
+        except (KeyError, ValueError) as exc:
+            self._mark_down(name, f"bad manifest: {exc}")
+            return
+        ready: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._tasks[name] = asyncio.create_task(self._serve(name, connection, ready), name=f"mcp:{name}")
+        try:
+            tools = await asyncio.wait_for(asyncio.shield(ready), START_TIMEOUT_S)
+        except TimeoutError:
+            self._tasks[name].cancel()
+            self._mark_down(name, f"did not start within {START_TIMEOUT_S:.0f} s")
+            return
+        except Exception as exc:  # the server failed to start; _serve has marked it down
+            logger.warning("MCP server %r failed to start: %s", name, redact(f"{type(exc).__name__}: {exc}"))
+            return
+        exposed = {t.name: t for t in tools if t.name in status.tools}
+        missing = status.tools - exposed.keys()
+        if missing:
+            logger.warning("MCP server %r does not provide declared tools %s", name, sorted(missing))
+        clash = exposed.keys() & {n for n, t in self._tools.items() if t.metadata.get("server") != name}
+        if clash:
+            self._mark_down(name, f"tool names {sorted(clash)} already provided by another server")
+            return
+        for tool in exposed.values():
+            tool.metadata = {**(tool.metadata or {}), "server": name}
+        self._tools.update(exposed)
+        status.state, status.was_up = "up", True
+
+    async def _serve(self, name: str, connection: dict, ready: asyncio.Future) -> None:
+        """Own one server's session for its whole life, so it is opened and closed in the same task."""
+        client = MultiServerMCPClient({name: connection})
+        session: ClientSession | None = None
+        try:
+            async with client.session(name) as session:
+                tools = await load_mcp_tools(
+                    session, server_name=name, tool_interceptors=[self._call], handle_tool_errors=True
+                )
+                self._sessions[name] = session
+                ready.set_result(tools)
+                await self._stop.wait()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._mark_down(name, f"{type(exc).__name__}: {exc}")
+            if not ready.done():
+                ready.set_exception(exc)
+        finally:
+            # A restart may already have stored a newer session under this name; leave that one alone.
+            if session is not None and self._sessions.get(name) is session:
+                self._sessions.pop(name, None)
+
+    def _mark_down(self, name: str, reason: str) -> None:
+        status = self.status[name]
+        status.state, status.error = "down", redact(reason)
+        self._sessions.pop(name, None)
+        logger.warning("MCP server %r is down: %s", name, status.error)
+
+    async def _restart(self, name: str) -> None:
+        async with self._restart_lock:
+            status = self.status[name]
+            if status.state == "up" or time.monotonic() - status.last_attempt < RESTART_COOLDOWN_S:
+                return
+            logger.info("restarting MCP server %r", name)
+            old = self._tasks.pop(name, None)
+            if old:
+                old.cancel()  # closes the dead session in the task that opened it
+            await self._connect(name)
+
+    async def _call(self, request: MCPToolCallRequest, _handler) -> CallToolResult:
+        """Interceptor for every tool call: route to the server's current session, never raise."""
+        name, status = request.server_name, self.status[request.server_name]
+        if status.state == "down" and status.was_up:
+            await self._restart(name)
+        session = self._sessions.get(name)
+        if session is None:
+            return _error_result(status.description)
+        try:
+            return await session.call_tool(request.name, request.args)
+        except McpError as exc:
+            if exc.error.code == REQUEST_TIMEOUT_CODE:
+                return _error_result(f"{request.name} timed out after {CALL_TIMEOUT_S:.0f} s; try a narrower request.")
+            self._mark_down(name, f"{type(exc).__name__}: {exc}")
+        except Exception as exc:  # transport failure: the server crashed or the connection dropped
+            self._mark_down(name, f"{type(exc).__name__}: {exc}")
+        return _error_result(status.description)
+
+    def tools_for(self, agent: str) -> list[BaseTool]:
+        """The agent's allowlisted tools that were discovered, sorted by name."""
+        allowed = AGENTS[agent].tools
+        return [self._tools[n] for n in sorted(allowed & self._tools.keys())]
+
+    def unavailable_notes(self, agent: str) -> list[str]:
+        """Descriptions of down servers that provide any of the agent's tools, for its system prompt."""
+        allowed = AGENTS[agent].tools
+        return [s.description for s in self.status.values() if s.state != "up" and s.tools & allowed]
+
+    async def aclose(self) -> None:
+        self._stop.set()
+        tasks = list(self._tasks.values())
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=10)
+            for task in pending:
+                task.cancel()
+        self._tasks.clear()
+        self._sessions.clear()

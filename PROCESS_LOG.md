@@ -14,6 +14,72 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-21 — Phase 3: MCP servers and client
+
+**Dependencies (approved):** `mcp==1.30.0` and `langchain-mcp-adapters==0.3.2`. The latest
+`mcp` is 2.3.0, but AGENTS.md specifies the 1.x SDK and the adapters require `mcp<2`.
+
+**`rag/retriever.py`:** an LCEL runnable over the Chroma collection with `arxiv_ids` and
+`sections` filters. It returns chunk metadata plus a cosine-similarity score.
+- **Finding:** Chroma 1.5.9 can't open a read-only directory ("attempt to write a readonly
+  database"), and the index in the image is read-only for `appuser`.
+- **Workaround:** the retriever copies the index to a temp directory at startup and opens the
+  copy. The shipped files are never written.
+
+**`mcp_servers/corpus.py`** (FastMCP, stdio): `search_corpus` and `get_chunks`.
+- **Validation:** `k` must be 1–12; arXiv IDs are normalized and must be in the corpus;
+  section names must exist; query and ID-list sizes are capped. Problems come back as clear
+  tool errors.
+- **Startup:** the index loads once, before the server accepts requests.
+
+**`mcp_servers/papers_db.py`** (FastMCP, stdio): `describe_schema`, `run_sql` and
+`get_paper_metadata`.
+- **`run_sql` guard layers:**
+  - exactly one SELECT/WITH statement, checked with string literals and comments blanked out;
+  - a forbidden-keyword check (PRAGMA, ATTACH, DDL, DML);
+  - a `mode=ro` connection;
+  - a SQLite authorizer that allows only reads;
+  - a 200-row cap;
+  - a 2-second limit enforced by a progress handler.
+- **Schema notes:** `describe_schema` explains how to rank by `higher_is_better` and when to
+  flag unverified rows.
+
+**`mcp_client.py`:** one persistent session per server, each owned by its own task.
+- **Isolation:** a server that won't start, crashes or disconnects doesn't affect the others.
+- **Calls:** every tool call goes through an interceptor that uses the server's current
+  session. If the server is down, the call returns the manifest's description as a tool error.
+  A crashed server restarts on a later call, after a cooldown.
+- **Secrets:** the Tavily URL is built from `TAVILY_API_KEY`. A logging filter redacts the key
+  from every log message and traceback, and failure messages are redacted too.
+- **Filtering:** per-agent tool lists come from the new `agents/registry.py`.
+- **`mcp_config.json`:** each manifest lists its tools, which env vars to pass to the server,
+  and an "unavailable" description for the agents' prompts.
+
+**Fixes found while testing:**
+- FastMCP pretty-prints returned dicts, which costs tokens, so tools return compact JSON
+  strings.
+- FastMCP replaces the logging setup at import, so each server reconfigures with
+  `force=True`.
+- An empty result with a section filter now says that section names vary by paper. The 3DGS
+  paper has no "method" section.
+
+**Tests:**
+- `tests/test_phase3.py` (34 tests, offline; 43 including Phase 1) covers:
+  - the SQL guard (12 rejected statements) and `higher_is_better` ranking;
+  - the row cap and timeout;
+  - corpus `k` bounds and validation, against a fake-embedding index;
+  - exact per-agent tool lists;
+  - a server that won't start, a missing env var, and a tool error;
+  - a crash mid-call, followed by a restart;
+  - the Tavily key never appearing in log output.
+- `tests/test_phase3_live.py` (`RUN_LIVE=1`, Phase 3's "done when"): every tool listed and
+  called through the client, and a broken corpus manifest leaving the other servers working.
+  Both pass.
+- **In the container** (`paper-assistant:phase3`, uid 10001, `index/` not writable): all
+  three servers come up in about 3 s. The corpus index loads through the temp-copy
+  workaround (4,867 chunks). All five corpus and DB tools succeed, `DROP TABLE` is
+  rejected, and the raw Tavily key appears in none of the output.
+
 ### 2026-10-21 — Chunk spot-check, chunker fix, `eval/questions.jsonl`
 
 **Spot-check:** read 20 random chunks (seed 599).
