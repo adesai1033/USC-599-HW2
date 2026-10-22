@@ -140,20 +140,46 @@ topics:
 # corpus on scene representation and reconstruction rather than all of 3D vision.
 exclude:
   title_terms:
+    # surveys and position papers
     - survey
     - review
+    - "recent advances"
+    # humans, faces and avatars
     - avatar
+    - human
+    - humans
+    - head
+    - face
+    - portrait
+    - portraits
+    - "talking"
+    # generative text-to-3D
     - text-to-3d
     - "text-to-4d"
+    - "content creation"
+    # other 3D vision tasks
     - "3d object detection"
     - "semantic segmentation"
+    - "instance segmentation"
     - "6d pose"
     - "human pose"
     - "point cloud classification"
+    - grasp
+    # non-photographic imaging domains
     - medical
+    - endoscope
+    - endoscopic
+    - tomographic
+    - tomography
+    # security
+    - poisoning
+    - adversarial
   abstract_terms:
     - "large language model"
     - "autonomous driving perception"
+  # Hand-curated removals after reviewing data/selection_report.md. The freed slot goes to
+  # the next-ranked candidate in the same topic.
+  arxiv_ids: []
 
 pdf:
   # Skip papers whose PDF is missing or larger than this, rather than parsing partial text.

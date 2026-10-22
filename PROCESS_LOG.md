@@ -14,6 +14,34 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-21 — `ingest/fetch_arxiv.py`, select step run
+
+**Built:** `fetch_arxiv.py` with two steps, `select` and `download`. Neither calls a paid API.
+- **`select`:** runs 17 arXiv queries, keeps papers that match the categories and date range,
+  and applies the exclusions. It then looks up citation counts in batches on Semantic Scholar
+  and fills each topic's quota (seeds, then recent papers, then the most cited).
+- **`select` outputs:** `data/candidates.json`, `data/selected.json` and
+  `data/selection_report.md`.
+- **`download`:** fetches each selected PDF to `data/raw/`, skips files that already exist,
+  checks the bytes really are a PDF, and enforces the size cap.
+- **Rate limits:** waits 3 s between arXiv requests and retries 429 and 5xx responses with
+  backoff. The User-Agent identifies the project only.
+- **Dependency:** added `pyyaml==6.0.3` to `requirements-dev.txt` (approved).
+
+**Spec changes:** after the first run I tightened the title exclusions (humans, faces,
+portraits, medical, CT and tomography, instance segmentation, grasping, adversarial and
+poisoning papers, "recent advances" surveys). I also added `exclude.arxiv_ids` for hand
+curation.
+
+**Results:** 1,874 candidates; 146 excluded by filters; 220 selected, with every topic at
+quota. By year: 2020 14, 2021 41, 2022 21, 2023 43, 2024 60, 2025 40, 2026 1.
+
+**Found:** Semantic Scholar reports `citationCount: 0` for NeRF (2003.08934). This is an
+error in their record, not in our code. NeRF is still included because it's a seed, but
+`build_db.py` needs a citation fallback or "most-cited" queries will be wrong.
+
+**Still open:** hand review of the borderline papers in the report, then the `download` step.
+
 ### 2026-10-21 — Phase 2 started: `ingest/corpus_spec.yaml`
 
 **Done:** wrote the corpus spec covering scope, the `cs.CV`/`cs.GR` categories, a date range
