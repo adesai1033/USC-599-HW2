@@ -143,6 +143,17 @@ def summarize_result(message: ToolMessage) -> str:
     return f"{len(tool_text(message))} chars"
 
 
+def round_budget(used: int, max_rounds: int) -> str:
+    """The tool-round budget, as the last line of the worker's system prompt on every model call."""
+    left = max_rounds - used
+    if left <= 0:
+        return f"## Tool budget\n\nYou have used all {max_rounds} rounds of tool calls. Write your findings now."
+    last = " This is your last round: make every call you still need in this one response." if left == 1 else ""
+    return (f"## Tool budget\n\nRounds of tool calls used: {used} of {max_rounds} ({left} left). Several calls in one "
+            f"response count as one round. Once you have evidence for every part of the instruction, stop calling "
+            f"tools and write your findings.{last}")
+
+
 def allowed_citations(messages: list[AnyMessage]) -> dict[str, Citation]:
     """Every source the tools returned in this run, as the citation it would become, keyed by ID."""
     allowed: dict[str, Citation] = {}
@@ -227,8 +238,10 @@ def make_worker(
         tool_node = ToolNode(run_tools, handle_tool_errors=True)
 
         async def worker_agent(state: WorkerState) -> dict:
-            messages = [SystemMessage(system_prompt), *state["messages"]]
             max_rounds = max_tool_rounds()
+            # The model doesn't stop on its own; telling it the budget lets it plan its last searches.
+            budget = round_budget(state["rounds"], max_rounds)
+            messages = [SystemMessage(f"{system_prompt}\n\n{budget}"), *state["messages"]]
             if state["rounds"] >= max_rounds:
                 emit_trace(spec.name, "decision", step=state["step"], agent=spec.name,
                            detail=f"tool round cap ({max_rounds}) reached; summarizing without tools")

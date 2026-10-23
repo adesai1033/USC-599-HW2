@@ -14,6 +14,51 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Summary worker stops on its own: round budget in the prompt
+
+**Correction:** the 4e entry says "Gemini doesn't reliably batch tool calls". The traces show that
+was wrong.
+- In both comparison runs, round 2 ran the three per-paper searches in parallel.
+- The slow run (59 s) differed afterwards. It kept making follow-up calls: an off-topic rasterizer
+  search, an unneeded `get_paper_metadata`, a hunt for 3DGS's "Table 1" numbers, and a `get_chunks`
+  re-read. It then hit the 6-round cap.
+
+**Step 1 (a round plan in the prompt, cap 4):**
+- `prompts/summary.md` got a round plan: find papers (skip if IDs are given), all per-paper
+  searches in one round, at most one follow-up.
+- `get_paper_metadata` is only for years, venues or authors.
+- New caveat that tables, like equations, aren't reliably indexed, so don't hunt for table
+  numbers.
+- `summary` `max_tool_rounds` went 6 → 4.
+- **Result:** the cap fired in 6 of 6 topic runs. The model doesn't stop on its own; the cap did
+  the stopping. Totals were 39–47 s.
+
+**Step 2 (`graph/workers.py`):**
+- Every model call's system prompt now ends with the tool budget: "Rounds of tool calls used: N of
+  M (K left)…".
+- On the last round it adds "This is your last round: make every call you still need in this one
+  response."
+- This applies to all workers.
+
+**Result** (7 runs: comparison ×4, anti-aliasing ×2, 2024 hand-off ×1):
+- The cap fired in **0 of 7**; runs took 1–3 rounds.
+- **Time:** comparison 37.5–39.8 s (before: 41 s and 59 s), anti-aliasing 38 s, hand-off 44 s.
+- **Coverage:** every comparison cited the 3 named papers, anti-aliasing cited 3 and 5 papers,
+  every finding had Across papers, and there were no unverified citations or errors.
+- **Regression check:** the 3DGS question → research (still hit its 4-round cap once); most cited →
+  data.
+
+**Still open:**
+- In the first, partly lost measurement batch, one anti-aliasing run hit `worker_timeout` (the
+  summary worker ran past 60 s). The guard caught it, the supervisor retried summary and then
+  research, and the turn took 163 s. It didn't recur in the 7-run re-run, so it looks intermittent,
+  probably slow model calls.
+- The 2024 hand-off searched 5 papers in the latest run (10 in earlier ones). I didn't capture
+  whether the supervisor passed 5 IDs or summary dropped some.
+
+**Verified:** `pytest tests/` gives 122 passed, 2 skipped. The summary rounds test now checks the
+4-round cap and the budget lines.
+
 ### 2026-10-22 — Phase 4e: the `summary` worker
 
 There was no separate brief, so the scope came from AGENTS.md's summary row: multi-paper summaries

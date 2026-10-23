@@ -52,7 +52,7 @@ AGENTS: dict[str, AgentSpec] = {
         prompt_file=PROMPTS_DIR / "summary.md",
         tools=frozenset({"search_corpus", "get_chunks", "get_paper_metadata", "tavily_extract"}),
         default_tier="strong",
-        max_tool_rounds=6,  # a topic search, then per-paper evidence for several papers
+        max_tool_rounds=4,  # find papers, per-paper evidence (one batched round), one follow-up, one spare
     ),
 }
 

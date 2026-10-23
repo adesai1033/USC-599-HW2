@@ -102,17 +102,20 @@ async def test_summary_can_cite_a_web_source_it_extracted():
 
 
 @pytest.mark.asyncio
-async def test_summary_tool_rounds_default_to_six(monkeypatch):
-    monkeypatch.delenv("WORKER_MAX_TOOL_ROUNDS", raising=False)
-    model = ScriptedChatModel(script=[call("search_corpus", {"query": f"q{i}"}, f"c{i}") for i in range(6)] + [AIMessage("done")])
+async def test_summary_tool_rounds_are_capped_at_four(monkeypatch):
+    monkeypatch.setenv("WORKER_MAX_TOOL_ROUNDS", "9")  # the per-agent value wins over the global setting
+    model = ScriptedChatModel(script=[call("search_corpus", {"query": f"q{i}"}, f"c{i}") for i in range(4)] + [AIMessage("done")])
     await make_worker(SUMMARY, SUMMARY_TOOLS, model)(worker_input())
-    assert len(model.seen) == 7 and model.seen[-1][-1].text == SUMMARIZE_NOW
+    assert len(model.seen) == 5 and model.seen[-1][-1].text == SUMMARIZE_NOW
+    budgets = [m[0].text.rsplit("## Tool budget", 1)[1] for m in model.seen]  # the system prompt's last section
+    assert "used: 0 of 4 (4 left)" in budgets[0] and "used: 3 of 4 (1 left)" in budgets[3]
+    assert "This is your last round" in budgets[3] and "used all 4 rounds" in budgets[4]
 
 
 def test_summary_is_registered_with_its_allowlist():
     assert available_workers() == ["research", "data", "summary"]
     assert SUMMARY.tools == frozenset({"search_corpus", "get_chunks", "get_paper_metadata", "tavily_extract"})
-    assert SUMMARY.max_tool_rounds == 6 and AGENTS["summary"].prompt_file.read_text().startswith("You are the summary worker")
+    assert SUMMARY.max_tool_rounds == 4 and AGENTS["summary"].prompt_file.read_text().startswith("You are the summary worker")
     assert "(unavailable right now)" not in _roster(available_workers())
 
 

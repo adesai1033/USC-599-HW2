@@ -218,7 +218,7 @@ class OrchestratorState(TypedDict):
 query in that run returned rows (an aggregate such as counts per year cites no single paper).
 `Finding.queries` lists the SQL that `run_sql` executed successfully in that run (empty for workers
 without SQL). `AgentSpec.max_tool_rounds` overrides `WORKER_MAX_TOOL_ROUNDS` per agent; `data` uses 5
-and `summary` 6. Until Phase 5's router assigns tiers, every worker runs on the fast tier with low
+and `summary` 4. Until Phase 5's router assigns tiers, every worker runs on the fast tier with low
 thinking (`graph/build.py`), including `summary`, whose default tier is strong.
 `CitationReport = {valid: list[Citation], invalid: list[str]}`; Phase 6 sends it as the
 `citations` SSE event.
