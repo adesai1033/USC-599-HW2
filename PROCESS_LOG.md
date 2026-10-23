@@ -14,6 +14,36 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Phase 5a: provider tiers, the router and fallback (not wired in yet)
+
+Phase 5 is split: 5a adds the modules with unit tests and leaves the graph unchanged; 5b wires them
+in and runs the live checks.
+- **`llm.py`:** `get_llm` now has three tiers.
+  - fast: Gemini, unchanged.
+  - strong: `ChatAnthropic`, no extended thinking, 60 s timeout, 1 SDK retry.
+  - fallback: `ChatOpenAI`, `reasoning_effort` from the caller's thinking level, 60 s, 1 retry.
+  - Also `PROVIDERS` and `model_id(tier)`.
+- **`config.py`:** Anthropic and OpenAI keys and models. They're not required at startup: a missing
+  key becomes a provider error, which falls back. Model IDs default to the `.env.example` values. New
+  `STRONG_CONTEXT_TOKENS` (default 8000), added to `.env.example`.
+- **`router.py`:**
+  - `route(call_site, RouteFeatures)` is a pure function implementing the AGENTS.md table, with a
+    reason that names the deciding values.
+  - Feature helpers: `sql_errored`, `papers_in_scope` (arXiv IDs in the supervisor's instruction, not
+    the user query), `cited_papers`, `estimate_tokens`.
+  - `invoke_with_fallback` retries once on OpenAI after a provider error and returns a
+    `fallback=True` decision naming the error class. Other errors, cancellation, and a failing
+    fallback propagate.
+- **`graph/guard.py`:** the provider-error check moved into a shared `is_provider_error`, used by
+  both the guard and the router.
+- **Tests:** `tests/conftest.py` now overrides the Anthropic and OpenAI keys and models too, so tests
+  never reach a real provider; it keeps the real keys under `RUN_LIVE=1`.
+- **Verification:**
+  - Re-checked `gpt-6.1-sol` on OpenAI's models page: reasoning effort low through max.
+  - One tiny live call to each provider worked. Sonnet took 14.5 s for "ok", so latency needs
+    watching in 5b.
+- **Verified:** `pytest tests/` gives 140 passed, 2 skipped (18 new in `tests/test_router.py`).
+
 ### 2026-10-22 — Phase 5 prep: the Anthropic dependency
 
 - Installed `langchain-anthropic==1.7.6` (pulls in `anthropic` 1.17.0) for the strong tier and pinned

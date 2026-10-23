@@ -75,6 +75,15 @@ Model IDs verified against the provider docs on 2026-10-21:
 | `OPENAI_MODEL` | `gpt-6.1-sol` | https://developers.openai.com/api/docs/models |
 | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | https://developers.openai.com/api/docs/models |
 
+Tiers (`llm.py`): **fast** = Gemini (`GEMINI_MODEL`), **strong** = Claude (`ANTHROPIC_MODEL`, no extended
+thinking), **fallback** = OpenAI (`OPENAI_MODEL`). On 2026-10-22 I re-checked the OpenAI page:
+`gpt-6.1-sol` takes `reasoning_effort` low/medium/high/xhigh/max (no `none` or `minimal`); the
+fallback tier uses `low` where the caller asks for low thinking. A one-line call to each of
+`claude-sonnet-5-5` and `gpt-6.1-sol` succeeded the same day. `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
+are optional at startup: a missing key fails that provider's calls, which then fall back.
+`router.py` picks the tier per call; `STRONG_CONTEXT_TOKENS` (default 8000) is the synthesize context
+size above which it uses the strong tier.
+
 ## MCP servers
 
 Three servers, declared in `mcp_config.json` (path in `MCP_SERVERS_CONFIG`) and connected by

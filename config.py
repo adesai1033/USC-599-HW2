@@ -10,6 +10,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 REQUIRED = ("GOOGLE_API_KEY", "GEMINI_MODEL")
+# Match .env.example; verified against the provider docs (see README).
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5"
+DEFAULT_OPENAI_MODEL = "gpt-6.1-sol"
 
 
 @dataclass(frozen=True)
@@ -18,11 +21,17 @@ class Settings:
     google_api_key: str
     gemini_model: str
     log_level: str
+    # The strong and fallback tiers are optional at startup: a missing key fails that provider's calls,
+    # which then fall back, instead of stopping the app.
+    anthropic_api_key: str = ""
+    anthropic_model: str = ""
+    openai_api_key: str = ""
+    openai_model: str = ""
 
     def __repr__(self) -> str:
         return (
-            f"Settings(port={self.port}, gemini_model={self.gemini_model!r}, "
-            f"log_level={self.log_level!r}, google_api_key=<redacted>)"
+            f"Settings(port={self.port}, gemini_model={self.gemini_model!r}, anthropic_model={self.anthropic_model!r}, "
+            f"openai_model={self.openai_model!r}, log_level={self.log_level!r}, api keys=<redacted>)"
         )
 
 
@@ -59,6 +68,11 @@ def tool_timeout_s() -> float:
     return _env_number("TOOL_TIMEOUT_S", 30, 0.001, float)
 
 
+def strong_context_tokens() -> int:
+    """STRONG_CONTEXT_TOKENS (default 8000): estimated synthesize context above which it uses the strong tier."""
+    return _env_number("STRONG_CONTEXT_TOKENS", 8000, 1)
+
+
 def mcp_reconnect_backoff_s() -> float:
     """MCP_RECONNECT_BACKOFF_S (default 30): wait after a failed reconnect before trying a server again."""
     return _env_number("MCP_RECONNECT_BACKOFF_S", 30, 0, float)
@@ -78,4 +92,8 @@ def get_settings() -> Settings:
         google_api_key=os.environ["GOOGLE_API_KEY"].strip(),
         gemini_model=os.environ["GEMINI_MODEL"].strip(),
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", "").strip(),
+        anthropic_model=os.environ.get("ANTHROPIC_MODEL", "").strip() or DEFAULT_ANTHROPIC_MODEL,
+        openai_api_key=os.environ.get("OPENAI_API_KEY", "").strip(),
+        openai_model=os.environ.get("OPENAI_MODEL", "").strip() or DEFAULT_OPENAI_MODEL,
     )

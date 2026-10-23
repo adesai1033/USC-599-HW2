@@ -56,12 +56,17 @@ def _chain(exc: BaseException) -> list[BaseException]:
     return seen
 
 
+def is_provider_error(exc: BaseException) -> bool:
+    """An LLM API error (auth, rate limit, timeout, 5xx, bad request) anywhere in the exception's chain."""
+    return any(isinstance(e, ModelError) or type(e).__module__.startswith(PROVIDER_MODULES) for e in _chain(exc))
+
+
 def classify(exc: BaseException) -> str:
     """One of worker_timeout, transport, provider_error or worker_exception."""
     chain = _chain(exc)
     if isinstance(exc, TimeoutError):
         return "worker_timeout"
-    if any(isinstance(e, ModelError) or type(e).__module__.startswith(PROVIDER_MODULES) for e in chain):
+    if is_provider_error(exc):
         return "provider_error"
     if any(isinstance(e, TRANSPORT_ERRORS) or type(e).__module__.startswith("mcp") for e in chain):
         return "transport"
