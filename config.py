@@ -68,6 +68,11 @@ def tool_timeout_s() -> float:
     return _env_number("TOOL_TIMEOUT_S", 30, 0.001, float)
 
 
+def supervisor_timeout_s() -> float:
+    """SUPERVISOR_TIMEOUT_S (default 20): wait for the supervisor's model before retrying on the fallback tier."""
+    return _env_number("SUPERVISOR_TIMEOUT_S", 20, 0.001, float)
+
+
 def strong_context_tokens() -> int:
     """STRONG_CONTEXT_TOKENS (default 8000): estimated synthesize context above which it uses the strong tier."""
     return _env_number("STRONG_CONTEXT_TOKENS", 8000, 1)

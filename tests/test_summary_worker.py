@@ -107,9 +107,13 @@ async def test_summary_tool_rounds_are_capped_at_four(monkeypatch):
     model = ScriptedChatModel(script=[call("search_corpus", {"query": f"q{i}"}, f"c{i}") for i in range(4)] + [AIMessage("done")])
     await make_worker(SUMMARY, SUMMARY_TOOLS, model)(worker_input())
     assert len(model.seen) == 5 and model.seen[-1][-1].text == SUMMARIZE_NOW
-    budgets = [m[0].text.rsplit("## Tool budget", 1)[1] for m in model.seen]  # the system prompt's last section
+    # The budget rides at the end of the history (the task, then each tool round), never in the system prompt,
+    # which stays identical so replayed thinking blocks keep their prefix.
+    budgets = [m[-1].text for m in model.seen[:4]] + [model.seen[4][-2].text]
     assert "used: 0 of 4 (4 left)" in budgets[0] and "used: 3 of 4 (1 left)" in budgets[3]
     assert "This is your last round" in budgets[3] and "used all 4 rounds" in budgets[4]
+    assert len({m[0].text for m in model.seen}) == 1 and "## Tool budget" not in model.seen[0][0].text
+    assert all(model.seen[i + 1][:len(m)] == m for i, m in enumerate(model.seen[:-1]))  # append-only
 
 
 def test_summary_is_registered_with_its_allowlist():

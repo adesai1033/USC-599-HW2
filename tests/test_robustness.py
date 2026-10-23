@@ -22,7 +22,7 @@ from graph.build import build_graph
 from graph.guard import guarded
 from graph.state import Citation, Finding
 from graph.synthesize import ANSWER_FAILED_NOTICE
-from graph.workers import make_worker
+from graph.workers import FIX_CITATIONS, make_worker
 from rag.citations import validate
 from tests.test_graph_skeleton import ANSWER, ScriptedSupervisor, answer_llm, decision, run
 from tests.test_phase3 import FAKE_SERVER, stdio_manifest
@@ -202,7 +202,8 @@ async def test_synthesize_failure_ends_with_a_fixed_notice(tokens, expected):
     ("Only invented [2308.04079#method-99].", False),
 ])
 async def test_worker_marks_unretrieved_citations_unverified(text, grounded):
-    model = ScriptedChatModel(script=[call("search_corpus", {"query": "x"}), AIMessage(text)])
+    # The worker asks once for a fix; this model repeats itself, so the invented ID stays.
+    model = ScriptedChatModel(script=[call("search_corpus", {"query": "x"}), AIMessage(text), AIMessage(text)])
     supervisor = ScriptedSupervisor([decision("research", "a", "lookup"), decision("synthesize")])
     graph = build_graph(workers={"research": make_worker(RESEARCH, [search_corpus], model)},
                         supervisor_llm=supervisor, synthesize_llm=answer_llm())
@@ -214,6 +215,19 @@ async def test_worker_marks_unretrieved_citations_unverified(text, grounded):
     error = next(e for e in final["errors"] if e.kind == "invalid_citation")
     assert "2308.04079#method-99" in error.message
     assert any("invalid citations" in t["detail"] for t in traces if t["kind"] == "error" and t["agent"] == "research")
+
+
+async def test_worker_gets_one_chance_to_replace_an_unretrieved_citation():
+    model = ScriptedChatModel(script=[call("search_corpus", {"query": "x"}),
+                                      AIMessage("Tiles [2308.04079#method-99]."),
+                                      AIMessage("Tiles [2308.04079#method-03].")])
+    out = await make_worker(RESEARCH, [search_corpus], model)(worker_input())
+    finding = out["findings"][0]
+    assert finding.content == "Tiles [2308.04079#method-03]." and out.get("errors") is None
+    assert [c.id for c in finding.citations] == ["2308.04079#method-03"]
+    fix = model.seen[2][-1].text
+    assert fix.startswith(FIX_CITATIONS.split(":")[0]) and "2308.04079#method-99" in fix
+    assert model.seen[2][-2].text == "Tiles [2308.04079#method-99]."  # appended after the reply: history stays append-only
 
 
 async def test_answer_citations_split_valid_and_invalid_in_order():
@@ -264,7 +278,7 @@ async def test_tool_timeout_is_a_tool_error_and_the_worker_finishes(monkeypatch)
         assert tools.status["fake"].state == "up"  # a timeout is not a dead server
         model = ScriptedChatModel(script=[call("sleep", {"seconds": 5}), AIMessage("The lookup timed out; not in the corpus.")])
         out = await make_worker(RESEARCH, [tools._tools["sleep"]], model)(worker_input())
-        tool_message = model.seen[1][-1]
+        tool_message = model.seen[1][-2]  # then the round budget
         assert tool_message.status == "error" and "timed out after 0.5 s" in tool_message.text
         assert out["findings"][0].content == "The lookup timed out; not in the corpus."
     finally:

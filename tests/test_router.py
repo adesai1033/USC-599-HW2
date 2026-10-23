@@ -19,7 +19,7 @@ from router import RouteFeatures, invoke_with_fallback, route
 def test_each_tier_is_its_own_provider():
     assert isinstance(get_llm("fast"), ChatGoogleGenerativeAI)
     assert isinstance(get_llm("strong"), ChatAnthropic)
-    assert get_llm("strong").thinking == {"type": "between_tools"}  # replayed thinking blocks would be rejected
+    assert get_llm("strong").thinking == {"type": "between_tools"}  # less thinking, for latency
     assert isinstance(get_llm("fallback", thinking_level="low"), ChatOpenAI)
     assert get_llm("fallback", thinking_level="low").reasoning_effort == "low"
     assert [model_id(t) for t in ("fast", "strong", "fallback")] == [
@@ -182,3 +182,27 @@ def test_is_provider_error_matches_guard_classification():
     assert is_provider_error(AuthenticationError("x")) and is_provider_error(ModelError("x"))
     assert not is_provider_error(ValueError("x")) and not is_provider_error(TimeoutError())
     assert classify(AuthenticationError("x")) == "provider_error"
+
+
+@pytest.mark.asyncio
+async def test_a_primary_call_past_its_timeout_falls_back():
+    log = []
+
+    async def stalled():
+        log.append("primary")
+        await asyncio.sleep(5)
+
+    async def fallback():
+        log.append("fallback")
+        return "fallback answer"
+
+    result, [switched] = await invoke_with_fallback(route("supervisor", RouteFeatures()), stalled, fallback, timeout=0.05)
+    assert result == "fallback answer" and log == ["primary", "fallback"]
+    assert switched.fallback and "no reply within 0.05 s from google" in switched.reason
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_without_a_limit_set_is_not_a_provider_error():
+    _, primary, fallback = calls(primary_error=TimeoutError())
+    with pytest.raises(TimeoutError):
+        await invoke_with_fallback(route("research", RouteFeatures()), primary, fallback)

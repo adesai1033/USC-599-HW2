@@ -14,6 +14,51 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-23 — Phase 5 follow-ups: Claude's thinking blocks, DROP TABLE, routing records, stalls
+
+**1. The remaining Claude 400 was the same thinking-signature error.** The probe caught its message:
+"messages.1.content.10: Invalid `signature` in `thinking` block".
+- `between_tools` does not turn thinking off. It limits thinking to the gaps between tool calls, and
+  that failed call had 76 reasoning tokens. Those blocks are signed and bound to the exact prompt
+  prefix, and the round budget still rewrote the system prompt every call.
+- **Fix:** worker histories are now append-only.
+  - The system prompt is fixed for the run.
+  - The round budget goes at the end of the task message, and as a message after each tool round.
+  - The two fix requests (attribution, then citations) also append to one history.
+  - `between_tools` stays, for latency.
+- **Verified:**
+  - A test checks that each call's messages extend the previous call's, and that the system prompt
+    is identical across calls.
+  - Live, Claude with its default (adaptive) thinking produced signed thinking blocks on middle calls
+    (`[0, 1, 1, 0]` and `[0, 1, 0]` per call). Later calls replayed them with no 400. Before the fix,
+    this setup failed on the second call.
+  - 8 graph runs on Claude (comparison ×4, hand-off ×2, anti-aliasing ×2) had no fallbacks and no
+    errors. The 3DGS lookup on Gemini works with the budget message after tool results.
+
+**2. DROP TABLE now reaches `run_sql`.**
+- `prompts/supervisor.md`: a request to run a SQL statement or change the database goes to the
+  database worker, with the statement quoted.
+- `prompts/data.md`: pass a given statement to `run_sql` unchanged and report its error.
+- **Live:** "Run DROP TABLE papers" and "Delete all papers from 2020" go to data, `run_sql`, "Only
+  read-only SELECT or WITH queries are allowed." The point-cloud question still goes straight to
+  synthesize.
+- Bonus: after the SQL error, `data` escalated to strong mid-run. This was the first live check of
+  that rule, and of a Gemini history passed to Claude.
+
+**3. Failed workers keep their routing decisions.**
+- `graph.trace.recording()` collects every decision emitted inside it.
+- `guarded()` returns them in `routing` on failure or timeout. Tests cover a double provider failure
+  and a timeout.
+
+**4. One-offs:**
+- **Stalled supervisor call:** `invoke_with_fallback(timeout=...)`. The supervisor now falls back
+  to OpenAI after `SUPERVISOR_TIMEOUT_S` (default 20, new in `config.py` and `.env.example`) with
+  "no reply within 20 s from google". Routing normally takes 2–5 s; one Gemini call took 53 s.
+- **Unretrieved citations:** a worker that cites an ID no tool returned is asked once to replace it
+  (`FIX_CITATIONS`). Whatever remains is still marked `[unverified]` as before.
+
+**Verified:** `pytest tests/` gives 154 passed, 2 skipped.
+
 ### 2026-10-23 — Phase 5b: routing wired into the graph
 
 **What changed:**

@@ -23,7 +23,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import Runnable
 
 from agents.registry import AGENTS, PROMPTS_DIR
-from config import max_supervisor_steps, max_worker_retries
+from config import max_supervisor_steps, max_worker_retries, supervisor_timeout_s
 from graph.state import AgentError, Dispatch, Finding, OrchestratorState, RoutingDecision, SupervisorDecision
 from graph.trace import emit_routing, emit_trace
 from llm import Models, Tier, resolve_models
@@ -167,7 +167,9 @@ def make_supervisor(
         failure_kind, failure = "", ""
         try:
             raw, _ = await invoke_with_fallback(routing[0], lambda: decider(routing[0].tier).ainvoke(messages),
-                                                lambda: decider("fallback").ainvoke(messages), switched)
+                                                lambda: decider("fallback").ainvoke(messages), switched,
+                                                # Routing takes 2-5 s; a stalled provider call (one took 53 s) moves on.
+                                                timeout=supervisor_timeout_s())
             decision = raw if isinstance(raw, SupervisorDecision) else SupervisorDecision.model_validate(raw)
         except ValueError as exc:  # OutputParserException and pydantic's ValidationError: unreadable output
             failure_kind, failure = "supervisor_parse_error", type(exc).__name__

@@ -90,7 +90,8 @@ async def test_worker_loops_tool_call_result_model_and_returns_one_finding():
     out = await make_worker(RESEARCH, [search_corpus], model)(worker_input())
     [finding] = out["findings"]
     assert finding.agent == "research" and finding.content == "Tiles are rasterized [2308.04079#method-03]."
-    assert len(model.seen) == 2 and isinstance(model.seen[1][-1], ToolMessage)  # the model saw the result
+    assert len(model.seen) == 2 and isinstance(model.seen[1][-2], ToolMessage)  # the model saw the result
+    assert model.seen[1][-1].text.startswith("## Tool budget")  # then how many rounds it has left
     first_prompt = model.seen[0][-1].text
     assert "explain 3DGS rasterization" in first_prompt and "How does 3DGS render?" in first_prompt and "lookup" in first_prompt
 
@@ -109,6 +110,8 @@ async def test_citations_carry_metadata_from_tool_results():
         call("tavily_search", {"query": "new 3dgs"}, "c2"),
         AIMessage(f"**Corpus** NeRF uses an MLP [2003.08934#method-00]. **Web** A new paper [{WEB_ID}]. "
                   "Also [2308.04079#intro-09]."),
+        AIMessage(f"**Corpus** NeRF uses an MLP [2003.08934#method-00]. **Web** A new paper [{WEB_ID}]. "
+                  "Also [2308.04079#intro-09]."),  # the one fix request, ignored
     ])
     out = await make_worker(RESEARCH, [search_corpus, tavily_search], model)(worker_input())
     citations = {c.id: c for c in out["findings"][0].citations}
@@ -140,7 +143,7 @@ async def test_a_raising_tool_becomes_an_error_message_and_the_worker_finishes()
     model = ScriptedChatModel(script=[call("get_paper_metadata", {"arxiv_ids": ["2308.04079"]}),
                                       AIMessage("Metadata lookup failed; not in the corpus.")])
     out = await make_worker(RESEARCH, [get_paper_metadata], model)(worker_input())
-    error = model.seen[1][-1]
+    error = model.seen[1][-2]
     assert isinstance(error, ToolMessage) and error.status == "error" and "database is locked" in error.text
     assert out["findings"][0].content == "Metadata lookup failed; not in the corpus."
 

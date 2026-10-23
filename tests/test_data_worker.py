@@ -86,6 +86,7 @@ async def test_db_citation_not_in_this_runs_rows_is_unverified():
     model = ScriptedChatModel(script=[
         call("run_sql", {"sql": TOP_CITED}),
         AIMessage("3DGS leads [db:2308.04079]; NeRF has 5324 citations [db:2003.08934]."),
+        AIMessage("3DGS leads [db:2308.04079]; NeRF has 5324 citations [db:2003.08934]."),  # the fix request, ignored
     ])
     out = await make_worker(DATA, DATA_TOOLS, model)(worker_input())
     finding = out["findings"][0]
@@ -112,7 +113,7 @@ async def test_sql_error_is_retried_with_a_different_query():
         AIMessage("3DGS leads [db:2308.04079]."),
     ])
     out = await make_worker(DATA, DATA_TOOLS, model)(worker_input())
-    error = model.seen[1][-1]
+    error = model.seen[1][-2]  # then the round budget
     assert error.status == "error" and "no such column" in error.text  # the model saw the error and fixed the query
     assert out["findings"][0].queries == [TOP_CITED]  # only SQL that ran successfully
     assert out["findings"][0].grounded is True

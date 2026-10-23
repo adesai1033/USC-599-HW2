@@ -32,8 +32,8 @@ def get_llm(tier: Tier, *, thinking_level: ThinkingLevel | None = None) -> BaseC
     """Return the chat model for a tier: fast = Gemini Flash, strong = Claude Sonnet, fallback = OpenAI.
 
     thinking_level caps reasoning before the model answers; None keeps the model's default. Gemini takes
-    it as thinking_level (3.8 Flash rejects "minimal") and OpenAI as reasoning_effort. Claude runs with
-    thinking off, so it is ignored there.
+    it as thinking_level (3.8 Flash rejects "minimal") and OpenAI as reasoning_effort. Claude thinks
+    only between tool calls, so it is ignored there.
     """
     settings = get_settings()
     # The SDKs retry transient errors themselves. Strong and fallback retry only once, so a failing
@@ -42,9 +42,9 @@ def get_llm(tier: Tier, *, thinking_level: ThinkingLevel | None = None) -> BaseC
         return ChatGoogleGenerativeAI(model=settings.gemini_model, api_key=settings.google_api_key, streaming=True,
                                       timeout=TIMEOUT_S, max_retries=2, thinking_level=thinking_level)
     if tier == "strong":
-        # Sonnet 5.5 thinks by default, and its thinking blocks are bound to the exact prompt prefix: the
-        # worker's round budget changes the system prompt every call, so a replayed block is rejected (400).
-        # "between_tools" is how this model turns thinking off ("disabled" is a 400); default effort is high.
+        # Sonnet 5.5 thinks by default ("disabled" is a 400). "between_tools" keeps thinking to the gaps
+        # between tool calls, for latency. Those blocks are still signed and bound to the exact prompt
+        # prefix, which is why worker histories are append-only (graph/workers.py:round_budget).
         return ChatAnthropic(model=settings.anthropic_model, api_key=settings.anthropic_api_key, streaming=True,
                              default_request_timeout=TIMEOUT_S, max_retries=1, thinking={"type": "between_tools"})
     if tier == "fallback":

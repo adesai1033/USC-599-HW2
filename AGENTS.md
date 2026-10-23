@@ -250,9 +250,14 @@ How it's wired:
 - Workers route on every model call but emit only when the tier changes. A tier that failed falls back
   for the rest of that run.
 - Synthesize falls back only if no token has streamed yet.
-- Claude runs with thinking off (`between_tools`). Its thinking blocks are bound to the exact prompt
-  prefix, and the worker's round budget changes the system prompt on every call.
+- Claude thinks only between tool calls (`between_tools`). Its thinking blocks are signed and bound
+  to the exact prompt prefix, so worker histories are append-only: the system prompt never changes
+  within a run, and the round budget is appended after the task and after each tool round.
 - A fallback logs a WARNING naming the original error's class and message.
+- The supervisor's call falls back after `SUPERVISOR_TIMEOUT_S` (default 20) without a reply. Routing
+  takes 2–5 s, and one Gemini call stalled for 53 s.
+- A worker that fails or times out keeps the decisions it emitted: `guarded()` collects them with
+  `graph.trace.recording()` and returns them in `routing`.
 - The supervisor's `task_type` feeds research's rule. Summary counts the arXiv IDs in its instruction.
 
 ## RAG pipeline
@@ -358,8 +363,8 @@ Do not violate them to "make tests pass."
    turn, or `[db:<arxiv_id>]` for papers that appeared in `run_sql`/`get_paper_metadata` results
    this turn. `rag/citations.py` enforces this. Never fabricate a citation to look grounded.
    Validation runs at two levels: in each worker, against the sources its tools returned in
-   that run (an invalid ID becomes `[unverified]` in the finding and an `invalid_citation`
-   error), and on the final answer, against the union of the findings' citations (stored in
+   that run (the worker is asked once to replace an invalid ID; one that remains becomes
+   `[unverified]` in the finding and an `invalid_citation` error), and on the final answer, against the union of the findings' citations (stored in
    `answer_citations`; the answer has already streamed, so invalid IDs are reported, not
    rewritten).
 7. **Never crash.** Each of these produces a graceful answer, a complete SSE stream ending

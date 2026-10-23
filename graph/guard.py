@@ -2,8 +2,8 @@
 
 guarded(name, node_fn) runs the worker under WORKER_TIMEOUT_S and catches Exception (never
 CancelledError or other BaseExceptions). The failure is logged with its traceback, classified, and
-returned as a state update holding one AgentError and no finding, so the graph continues to the
-supervisor. Kinds:
+returned as a state update holding one AgentError, no finding, and the routing decisions the worker
+emitted before it failed, so the graph continues to the supervisor. Kinds:
   worker_timeout    the worker ran past WORKER_TIMEOUT_S
   transport         an MCP connection or session error
   provider_error    an LLM API error (auth, rate limit, 5xx, bad request)
@@ -22,7 +22,7 @@ from mcp.shared.exceptions import McpError
 
 from config import worker_timeout_s
 from graph.state import AgentError, OrchestratorState
-from graph.trace import emit_trace
+from graph.trace import emit_trace, recording
 
 logger = logging.getLogger("graph.guard")
 
@@ -80,12 +80,14 @@ def guarded(name: str, node_fn: WorkerNode) -> WorkerNode:
         timeout = worker_timeout_s()
         start = time.perf_counter()
         try:
-            return await asyncio.wait_for(node_fn(state), timeout)
+            with recording() as routing:
+                return await asyncio.wait_for(node_fn(state), timeout)
         except Exception as exc:  # CancelledError is a BaseException and propagates
             kind = classify(exc)
             logger.exception("worker %r failed (%s)", name, kind)
             ms = round((time.perf_counter() - start) * 1000)
             emit_trace(name, "error", step=state.get("step"), agent=name, detail=kind, ms=ms)
-            return {"errors": [AgentError(agent=name, kind=kind, message=MESSAGES[kind].format(name=name, timeout=timeout))]}
+            error = AgentError(agent=name, kind=kind, message=MESSAGES[kind].format(name=name, timeout=timeout))
+            return {"errors": [error]} | ({"routing": routing} if routing else {})
 
     return node

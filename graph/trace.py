@@ -1,9 +1,13 @@
 """Trace events, written to LangGraph's custom stream: {step, node, kind, agent, detail, ms}.
 
 A routing decision is a trace event of kind "routing" that also carries the full RoutingDecision under
-"routing"; Phase 6 sends it as the `routing` SSE event.
+"routing"; Phase 6 sends it as the `routing` SSE event. Inside recording(), each emitted decision is
+also collected, so a worker that fails can still report the decisions it made (graph/guard.py).
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Literal
 
 from langgraph.config import get_stream_writer
@@ -11,6 +15,19 @@ from langgraph.config import get_stream_writer
 from graph.state import RoutingDecision
 
 TraceKind = Literal["enter", "exit", "tool_call", "tool_result", "error", "decision", "routing"]
+
+_recorded: ContextVar[list[RoutingDecision] | None] = ContextVar("recorded_routing", default=None)
+
+
+@contextmanager
+def recording() -> Iterator[list[RoutingDecision]]:
+    """Collect every routing decision emitted inside the block, including from tasks it starts."""
+    decisions: list[RoutingDecision] = []
+    token = _recorded.set(decisions)
+    try:
+        yield decisions
+    finally:
+        _recorded.reset(token)
 
 
 def emit_trace(
@@ -28,6 +45,8 @@ def emit_trace(
 
 def emit_routing(decision: RoutingDecision, *, step: int | None = None) -> None:
     """Write one routing decision, e.g. detail "strong anthropic claude-sonnet-5-5 (capability): ..."."""
+    if (decisions := _recorded.get()) is not None:
+        decisions.append(decision)
     detail = f"{decision.tier} {decision.provider} {decision.model} ({decision.dimension}): {decision.reason}"
     _write({"step": step, "node": decision.call_site, "kind": "routing", "agent": decision.agent, "detail": detail,
             "ms": None, "routing": decision.model_dump()})

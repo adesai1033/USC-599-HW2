@@ -3,8 +3,9 @@
   START -> worker_agent --(tool calls?)--> worker_tools -> worker_agent ... -> END
 
 worker_agent calls the model with the agent's tools bound. worker_tools runs them through
-ToolNode(handle_tool_errors=True) and emits tool_call / tool_result trace events. After
-WORKER_MAX_TOOL_ROUNDS rounds, the model is called once more without tools to summarize.
+ToolNode(handle_tool_errors=True) and emits tool_call / tool_result trace events, then appends the
+remaining tool-round budget to the history. After WORKER_MAX_TOOL_ROUNDS rounds, the model is called
+once more without tools to summarize. The history is append-only throughout.
 
 Every model call is routed (router.route() over the task type, SQL errors so far and papers in the
 instruction). A decision is emitted when the run starts and whenever the tier changes, e.g. data
@@ -12,8 +13,9 @@ escalating after a failed run_sql. A provider error retries on the fallback tier
 failed stays on the fallback for the rest of the run.
 
 The parent-graph node maps the subgraph's result to a Finding and to retrieved_chunk_ids (every chunk
-any tool returned). Citations are validated against the sources this run's tools returned: an ID
-that no tool returned is replaced with [unverified] and reported as an invalid_citation error, and
+any tool returned). Citations are validated against the sources this run's tools returned: the model
+gets one chance to replace an ID that no tool returned, then any left is replaced with [unverified]
+and reported as an invalid_citation error, and
 the finding is grounded if at least one valid citation remains or a run_sql query returned rows.
 Citable sources are chunks (search_corpus, get_chunks), web results (Tavily) and database rows
 (db:<arxiv_id> for every arXiv ID in a run_sql or get_paper_metadata result).
@@ -57,6 +59,11 @@ FIX_ATTRIBUTION = (
     "Some claims name a paper but cite a source that never mentions it:\n{problems}\n\n"
     "Rewrite your findings in full. For each of these claims, cite a tool result above that is about the paper "
     "it names, or remove the claim. Keep everything else as it was. Do not call any tools."
+)
+FIX_CITATIONS = (
+    "These citation IDs were not returned by any tool in this run: {ids}.\n\n"
+    "Rewrite your findings in full. Replace each with an ID that appears in the tool results above and supports "
+    "the claim, or remove the claim. Keep everything else as it was. Do not call any tools."
 )
 
 
@@ -154,7 +161,11 @@ def summarize_result(message: ToolMessage) -> str:
 
 
 def round_budget(used: int, max_rounds: int) -> str:
-    """The tool-round budget, as the last line of the worker's system prompt on every model call."""
+    """The tool-round budget: appended to the task and after every tool round, never to the system prompt.
+
+    The history stays append-only, so the prompt prefix a reply was made from never changes. Claude
+    rejects a replayed thinking block whose prefix (system prompt included) differs from the original.
+    """
     left = max_rounds - used
     if left <= 0:
         return f"## Tool budget\n\nYou have used all {max_rounds} rounds of tool calls. Write your findings now."
@@ -280,9 +291,7 @@ def make_worker(
 
         async def worker_agent(state: WorkerState) -> dict:
             max_rounds = max_tool_rounds()
-            # The model doesn't stop on its own; telling it the budget lets it plan its last searches.
-            budget = round_budget(state["rounds"], max_rounds)
-            messages = [SystemMessage(f"{system_prompt}\n\n{budget}"), *state["messages"]]
+            messages = [SystemMessage(system_prompt), *state["messages"]]
             decision = route(spec.name, RouteFeatures(task_type=state["task_type"], sql_errored=sql_errored(state["messages"]),
                                                       papers_in_scope=papers_in_scope(state["instruction"])))
             if state["rounds"] >= max_rounds:
@@ -306,7 +315,9 @@ def make_worker(
             for message in update["messages"]:
                 emit_trace(spec.name, "tool_result", step=state["step"], agent=spec.name,
                            detail=f"{message.name}: {summarize_result(message)}", ms=ms)
-            return {"messages": update["messages"], "rounds": state["rounds"] + 1}
+            # The model doesn't stop on its own; telling it the budget lets it plan its last searches.
+            budget = HumanMessage(round_budget(state["rounds"] + 1, max_tool_rounds()))
+            return {"messages": [*update["messages"], budget], "rounds": state["rounds"] + 1}
 
         graph = StateGraph(WorkerState)
         graph.add_node("worker_agent", worker_agent)
@@ -324,7 +335,8 @@ def make_worker(
             f"Instruction from the supervisor: {state.get('instruction', '')}\n\n"
             f"Original user question: {latest_question(state)}\n\n"
             f"Task type: {state.get('task_type') or 'general'}\n\n"
-            f"Today's date: {date.today().isoformat()}"  # so "this month" means something
+            f"Today's date: {date.today().isoformat()}\n\n"  # so "this month" means something
+            f"{round_budget(0, max_tool_rounds())}"
         )
         result = await build_subgraph(list(current_tools()), system_prompt).ainvoke(
             {"messages": [HumanMessage(task)], "instruction": state.get("instruction", ""),
@@ -337,6 +349,18 @@ def make_worker(
         content = final.text
         errors: list[AgentError] = []
 
+        history = [SystemMessage(system_prompt), *messages]
+
+        async def ask_to_fix(request: str) -> str:
+            """One rewrite of the findings on the run's last routed tier (or its fallback, if that tier failed)."""
+            nonlocal routing
+            decision = next(d for d in reversed(routing) if not d.fallback)
+            history.append(HumanMessage(request))
+            reply, new = await routed_call(decision, state.get("step"), routing, lambda t: models(t).ainvoke(history))
+            history.append(reply)
+            routing = routing + new
+            return reply.text
+
         # A claim that names one paper but cites another's source is wrong even when the ID was
         # retrieved, so the retrieval check below can't catch it. Give the model one chance to fix it.
         sources = source_texts(messages)
@@ -344,14 +368,7 @@ def make_worker(
             emit_trace(spec.name, "error", step=state.get("step"), agent=spec.name,
                        detail=f"attribution check: {len(mismatches)} claim(s) cite a source that doesn't mention "
                               "the paper they name; asking for a fix")
-            fix = HumanMessage(FIX_ATTRIBUTION.format(problems=_describe(mismatches)))
-            # The fix stays on the run's last routed tier (or its fallback, if that tier failed).
-            decision = next(d for d in reversed(routing) if not d.fallback)
-            reply, new = await routed_call(decision, state.get("step"), routing,
-                                           lambda t: models(t).ainvoke([SystemMessage(system_prompt), *messages, fix]))
-            routing += new
-            revised = reply.text
-            content = revised or content
+            content = await ask_to_fix(FIX_ATTRIBUTION.format(problems=_describe(mismatches))) or content
             if mismatches := attribution_mismatches(content, sources):
                 emit_trace(spec.name, "error", step=state.get("step"), agent=spec.name,
                            detail=f"attribution check: {len(mismatches)} claim(s) still mismatched")
@@ -361,8 +378,15 @@ def make_worker(
                             "those citations for those claims:\n" + _describe(mismatches),
                 ))
 
-        # Only IDs that this run's tools returned may be cited. Others become [unverified].
-        report = validate(content, allowed_citations(messages))
+        # Only IDs that this run's tools returned may be cited. The model gets one chance to replace
+        # others (usually a neighboring chunk ID it guessed); what remains becomes [unverified].
+        allowed = allowed_citations(messages)
+        report = validate(content, allowed)
+        if report.invalid:
+            emit_trace(spec.name, "error", step=state.get("step"), agent=spec.name,
+                       detail=f"citations no tool returned: {', '.join(report.invalid)}; asking for a fix")
+            content = await ask_to_fix(FIX_CITATIONS.format(ids=", ".join(report.invalid))) or content
+            report = validate(content, allowed)
         if report.invalid:
             content = mark_unverified(content, set(report.invalid))
             emit_trace(spec.name, "error", step=state.get("step"), agent=spec.name,

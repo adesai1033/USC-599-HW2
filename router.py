@@ -10,10 +10,12 @@ in scope, findings, context size), so every decision can be logged, streamed and
   summary     strong   downgrade to fast when exactly one paper is in scope                  capability
   synthesize  fast     >= 2 findings, >= 3 distinct papers cited, or context > STRONG_CONTEXT_TOKENS  hybrid
 
-invoke_with_fallback() runs a call on the routed tier and, on a provider error, retries it once on
-the fallback tier, returning a second decision with fallback=True and the original error's class.
+invoke_with_fallback() runs a call on the routed tier and, on a provider error (or no reply within an
+optional timeout), retries it once on the fallback tier, returning a second decision with
+fallback=True and the original error's class.
 """
 
+import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable, Iterable
@@ -106,11 +108,13 @@ def route(call_site: CallSite, features: RouteFeatures) -> RoutingDecision:
     raise ValueError(f"Unknown call site: {call_site!r}")
 
 
-def fallback_decision(decision: RoutingDecision, error: BaseException) -> RoutingDecision:
-    """The decision recorded when a call moves to the fallback tier after a provider error."""
+def fallback_decision(decision: RoutingDecision, error: BaseException, timeout: float | None = None) -> RoutingDecision:
+    """The decision recorded when a call moves to the fallback tier after a provider error or a timeout."""
+    cause = (f"no reply within {timeout:g} s" if isinstance(error, TimeoutError) and timeout is not None
+             else type(error).__name__)
     return decision.model_copy(update={
         "provider": PROVIDERS["fallback"], "model": model_id("fallback"), "tier": "fallback", "fallback": True,
-        "reason": f"{type(error).__name__} from {decision.provider} ({decision.tier} tier): retried on the fallback tier",
+        "reason": f"{cause} from {decision.provider} ({decision.tier} tier): retried on the fallback tier",
     })
 
 
@@ -119,19 +123,23 @@ async def invoke_with_fallback(
     primary: Callable[[], Awaitable[T]],
     fallback: Callable[[], Awaitable[T]],
     on_fallback: Callable[[RoutingDecision], None] | None = None,
+    timeout: float | None = None,
 ) -> tuple[T, list[RoutingDecision]]:
     """Run primary(); on a provider error, run fallback() once. Returns the result and any fallback decision.
 
-    on_fallback(decision) runs before the fallback call, so the switch is recorded even if the fallback
-    fails too. Only provider errors fall back: tool errors, bugs and cancellation propagate unchanged,
-    and so does a failure of the fallback itself. A call already routed to the fallback tier isn't retried.
+    With `timeout`, a primary call that hasn't returned in time is cancelled and also falls back; the
+    fallback call itself has no such limit. on_fallback(decision) runs before the fallback call, so the
+    switch is recorded even if the fallback fails too. Only provider errors and that timeout fall back:
+    tool errors, bugs and cancellation propagate unchanged, and so does a failure of the fallback itself.
+    A call already routed to the fallback tier isn't retried.
     """
     try:
-        return await primary(), []
+        return await (asyncio.wait_for(primary(), timeout) if timeout is not None else primary()), []
     except Exception as exc:
-        if decision.tier == "fallback" or not is_provider_error(exc):
+        timed_out = timeout is not None and isinstance(exc, TimeoutError)
+        if decision.tier == "fallback" or not (timed_out or is_provider_error(exc)):
             raise
-        switched = fallback_decision(decision, exc)
+        switched = fallback_decision(decision, exc, timeout)
         logger.warning("%s: %s: %s", decision.call_site, switched.reason, str(exc)[:500])
         if on_fallback is not None:
             on_fallback(switched)

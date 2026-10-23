@@ -3,6 +3,7 @@
 Fakes only: each test maps tiers to scripted models, so a call on the wrong tier fails loudly.
 """
 
+import asyncio
 import itertools
 
 import pytest
@@ -10,6 +11,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.runnables import RunnableLambda
 
 from agents.registry import WORKERS
 from graph.build import build_graph
@@ -175,3 +177,40 @@ async def test_a_failing_fallback_is_a_provider_error_and_the_graph_finishes():
     final, traces = await run(graph)
     assert [e.kind for e in final["errors"]] == ["provider_error"] and final["messages"][-1].text == ANSWER
     assert ("research", "fallback", True) in streamed(traces)  # the switch was streamed before the fallback failed
+    # The failed worker's decisions are kept in state too, not only streamed.
+    assert [r for r in routed(final) if r[0] == "research"] == [("research", "strong", False), ("research", "fallback", True)]
+
+
+class Slow(Unused):
+    """Answers only after the worker's time limit."""
+
+    async def _agenerate(self, *args, **kwargs) -> ChatResult:
+        await asyncio.sleep(5)
+        return ChatResult(generations=[ChatGeneration(message=AIMessage("late"))])
+
+
+async def test_a_timed_out_worker_keeps_its_routing_decision(monkeypatch):
+    monkeypatch.setenv("WORKER_TIMEOUT_S", "0.2")
+    graph = build_graph(workers={"research": make_worker(RESEARCH, [search_corpus], tiers(fast=Slow()))},
+                        supervisor_llm=ScriptedSupervisor([decision("research", "explain 3DGS", "lookup"),
+                                                           decision("synthesize")]),
+                        synthesize_llm=answer_llm())
+    final, _ = await run(graph)
+    assert [e.kind for e in final["errors"]] == ["worker_timeout"]
+    assert ("research", "fast", False) in routed(final)
+
+
+async def test_a_stalled_supervisor_call_moves_to_the_fallback(monkeypatch):
+    monkeypatch.setenv("SUPERVISOR_TIMEOUT_S", "0.1")
+
+    class Stalled(ScriptedSupervisor):
+        def with_structured_output(self, schema):
+            async def decide(_messages):
+                await asyncio.sleep(5)
+            return RunnableLambda(decide)
+
+    graph = build_graph(workers={}, synthesize_llm=answer_llm(),
+                        supervisor_llm=tiers(fast=Stalled([]), fallback=ScriptedSupervisor([decision("synthesize")])))
+    final, _ = await run(graph)
+    assert routed(final)[:2] == [("supervisor", "fast", False), ("supervisor", "fallback", True)]
+    assert "no reply within 0.1 s" in final["routing"][1].reason and final["messages"][-1].text == ANSWER

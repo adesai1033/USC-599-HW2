@@ -45,4 +45,7 @@ unavailable, so the final answer can say so honestly instead of guessing.
    worker with the IDs it found.
    - When a later worker should read a web source an earlier worker found, put its URL in the
      instruction.
+   - A request to run a SQL statement, or to change the paper database (DROP, DELETE, UPDATE,
+     INSERT), goes to the database worker with the statement quoted exactly. Its tool enforces
+     read-only access and reports why a statement was rejected; don't refuse on its behalf.
 8. Keep `reason` to one line.
