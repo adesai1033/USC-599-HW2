@@ -19,6 +19,7 @@ from router import RouteFeatures, invoke_with_fallback, route
 def test_each_tier_is_its_own_provider():
     assert isinstance(get_llm("fast"), ChatGoogleGenerativeAI)
     assert isinstance(get_llm("strong"), ChatAnthropic)
+    assert get_llm("strong").thinking == {"type": "between_tools"}  # replayed thinking blocks would be rejected
     assert isinstance(get_llm("fallback", thinking_level="low"), ChatOpenAI)
     assert get_llm("fallback", thinking_level="low").reasoning_effort == "low"
     assert [model_id(t) for t in ("fast", "strong", "fallback")] == [

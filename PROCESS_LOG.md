@@ -14,6 +14,76 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-23 — Phase 5b: routing wired into the graph
+
+**What changed:**
+- **Models resolver** (`llm.resolve_models`): every node takes a model per tier. Tests still pass
+  one fake for all tiers, or a fake per tier.
+- **Supervisor:** routed with fallback.
+- **Workers:**
+  - Routed on every model call, but a decision is emitted only when the tier changes (`data`
+    escalates after a failed `run_sql`).
+  - A tier that failed stays on the fallback for the rest of the run.
+  - The round-cap summary call and the attribution fix use the run's tier.
+- **Synthesize:** routed from findings and context size. It falls back only before the first token.
+- **Streaming and state:** each decision streams as a trace event of kind `routing` that carries the
+  full `RoutingDecision`, and is stored in `routing` in state.
+- **CLI:** prints each decision and a routing summary.
+- **Tests:** 9 new in `tests/test_routing_graph.py`; 149 passed, 2 skipped.
+
+**Bug found live: Claude's thinking blocks.** Every summary run on Claude failed with a 400 and fell
+back to OpenAI.
+- Sonnet 5.5 thinks by default, and its signed thinking blocks are bound to the exact prompt
+  prefix.
+- Our round budget rewrites the system prompt every call, so the second call was rejected ("The
+  `system` prompt differs from the one this block was created with").
+- **Fix:** the strong tier runs with thinking off, `thinking={"type": "between_tools"}`. Sonnet 5.5
+  rejects `{"type": "disabled"}`.
+- Since then Claude's replies carry only text and tool-use blocks. Smoke test: Claude and OpenAI
+  both accept a Gemini tool-call history, so a mid-run tier switch needs no message rewriting.
+
+**Canonical queries** (routing per call site):
+
+| Query | Workers | Non-fast routing | Notes |
+|---|---|---|---|
+| How does 3DGS render | research | none | 30 s |
+| Compare NeRF / Instant-NGP / 3DGS | summary | summary strong, synthesize strong (4 papers) | |
+| Best PSNR on Mip-NeRF 360 | data → research | synthesize strong (2 findings) | |
+| Lowest LPIPS on T&T | data → research | synthesize strong (2 findings) | |
+| Most-cited 2024 | data → summary | summary strong, synthesize strong | |
+| This month | research | none | |
+| What's a point cloud | none | none | supervisor → synthesize, no tools, 5 s |
+| 9999.99999 | research | none | |
+| DROP TABLE | none | none | answered without tools |
+
+- The mix of fast and strong holds. The supervisor is always fast.
+- `data` never escalated: none of its SQL errored in these runs. The unit test covers it.
+
+**Probes:**
+- **Invalid `ANTHROPIC_API_KEY`:** summary and synthesize both fell back to OpenAI
+  (`AnthropicAuthenticationError`), and the answer completed with no unverified citations.
+- **Both providers failing** (invalid Anthropic key, nonexistent `OPENAI_MODEL`; not an invalid
+  OpenAI key, which would also break corpus embeddings):
+  - workers fail as `provider_error`, and the supervisor retries and then stops at the step limit;
+  - synthesize falls back, fails, and ends with the fixed notice, exit 0.
+  - Worker routing decisions from runs that raised are streamed but not kept in state.
+
+**Summary on Sonnet** (comparison ×8, hand-off ×2, `WORKER_TIMEOUT_S=300` for the probe):
+- Comparison summary 24–35 s (Gemini: 23–24 s); totals 37–64 s (Gemini: 38–40 s).
+- Synthesize on Sonnet takes 9–11 s.
+- Every finding had Across papers.
+- **Margin:** the worst run without a fallback leaves 25 s under the 60 s timeout. One run that fell
+  back mid-summary took 47 s, which leaves 13 s.
+
+**Still open:**
+- One of the 14 Claude summary runs since the fix fell back after an `AnthropicInvalidRequestError`
+  of unknown cause. It didn't recur in 9 more runs. The fallback warning now logs the provider's
+  message, so the next one will show the cause.
+- One Gemini supervisor call took 52.6 s for 221 tokens: provider latency (turn total 103 s).
+- One comparison run cited an unretrieved chunk (`2201.05989#captions-04`); the worker validator
+  marked it `[unverified]`.
+- One hand-off: the supervisor passed 5 of the 10 IDs, which confirms the earlier guess.
+
 ### 2026-10-22 — Phase 5a: provider tiers, the router and fallback (not wired in yet)
 
 Phase 5 is split: 5a adds the modules with unit tests and leaves the graph unchanged; 5b wires them

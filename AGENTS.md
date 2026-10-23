@@ -218,8 +218,7 @@ class OrchestratorState(TypedDict):
 query in that run returned rows (an aggregate such as counts per year cites no single paper).
 `Finding.queries` lists the SQL that `run_sql` executed successfully in that run (empty for workers
 without SQL). `AgentSpec.max_tool_rounds` overrides `WORKER_MAX_TOOL_ROUNDS` per agent; `data` uses 5
-and `summary` 4. Until Phase 5's router assigns tiers, every worker runs on the fast tier with low
-thinking (`graph/build.py`), including `summary`, whose default tier is strong.
+and `summary` 4.
 `CitationReport = {valid: list[Citation], invalid: list[str]}`; Phase 6 sends it as the
 `citations` SSE event.
 
@@ -240,6 +239,21 @@ is a pure function, unit-tested, and its output is streamed to the UI.
 On a provider error (timeout, 429, 5xx, auth failure) the call retries once on the
 **fallback** provider and records `fallback=True` with the original error class.
 `RoutingDecision = {call_site, agent, provider, model, tier, dimension, reason, fallback}`.
+
+How it's wired:
+- Graph nodes take a `Models` resolver (tier → chat model, `llm.resolve_models`); tests pass one fake
+  for every tier, or a dict of fakes per tier.
+- Every call uses low thinking: Gemini's `thinking_level`, OpenAI's `reasoning_effort`, and Claude
+  without extended thinking.
+- Each decision is emitted as a trace event of kind `routing` that carries the full `RoutingDecision`,
+  and is appended to `routing` in state.
+- Workers route on every model call but emit only when the tier changes. A tier that failed falls back
+  for the rest of that run.
+- Synthesize falls back only if no token has streamed yet.
+- Claude runs with thinking off (`between_tools`). Its thinking blocks are bound to the exact prompt
+  prefix, and the worker's round budget changes the system prompt on every call.
+- A fallback logs a WARNING naming the original error's class and message.
+- The supervisor's `task_type` feeds research's rule. Summary counts the arXiv IDs in its instruction.
 
 ## RAG pipeline
 

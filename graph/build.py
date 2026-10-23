@@ -22,7 +22,7 @@ from graph.supervisor import make_supervisor
 from graph.synthesize import make_synthesize
 from graph.trace import emit_trace
 from graph.workers import WorkerNode, make_worker
-from llm import get_llm
+from llm import Models, resolve_models
 from mcp_client import MCPTools
 
 # Each supervisor decision is at most two graph steps (supervisor, then a worker), plus synthesize.
@@ -45,25 +45,26 @@ def _traced(name: str, worker: WorkerNode) -> WorkerNode:
 def build_graph(
     *,
     workers: Mapping[str, WorkerNode] | None = None,
-    supervisor_llm: BaseChatModel | None = None,
-    synthesize_llm: BaseChatModel | None = None,
+    supervisor_llm: BaseChatModel | Models | None = None,
+    synthesize_llm: BaseChatModel | Models | None = None,
     mcp: MCPTools | None = None,
 ) -> CompiledStateGraph:
     """Compile the orchestration graph. Dependencies are injectable so tests can pass fakes.
 
     `workers` maps a worker name to its node function. By default a worker is built for every agent in
-    the registry's WORKERS, with its allowlisted tools from `mcp` (a started MCPTools) and its
-    default-tier model. Tools and "unavailable" notes are read from `mcp` at the start of each run, so
+    the registry's WORKERS, with its allowlisted tools from `mcp` (a started MCPTools) and the
+    configured providers, from which router.route() picks a tier per call. Tools and "unavailable" notes are read from `mcp` at the start of each run, so
     server health changes reach the next run. Every worker node is wrapped by guarded(): a failure
     becomes an AgentError and the graph returns to the supervisor.
     """
     if workers is None:
         if mcp is None:
             raise ValueError("build_graph needs a started MCPTools (mcp=...) to build the registry's workers")
-        # Every worker runs on the fast tier until Phase 5's router picks tiers (summary's default is
-        # strong). Low thinking halved the research worker's time (27 s -> 13 s) and found the same papers.
+        # router.route() picks each call's tier. Low thinking halved the research worker's time on Gemini
+        # (27 s -> 13 s) and found the same papers.
+        models = resolve_models(None, thinking_level="low")
         workers = {
-            name: make_worker(WORKERS[name], partial(mcp.tools_for, name), get_llm("fast", thinking_level="low"),
+            name: make_worker(WORKERS[name], partial(mcp.tools_for, name), models,
                               unavailable_notes=partial(mcp.unavailable_notes, name))
             for name in available_workers()
         }

@@ -118,11 +118,13 @@ async def invoke_with_fallback(
     decision: RoutingDecision,
     primary: Callable[[], Awaitable[T]],
     fallback: Callable[[], Awaitable[T]],
+    on_fallback: Callable[[RoutingDecision], None] | None = None,
 ) -> tuple[T, list[RoutingDecision]]:
     """Run primary(); on a provider error, run fallback() once. Returns the result and any fallback decision.
 
-    Only provider errors fall back: tool errors, bugs and cancellation propagate unchanged, and so does
-    a failure of the fallback itself. A call already routed to the fallback tier isn't retried.
+    on_fallback(decision) runs before the fallback call, so the switch is recorded even if the fallback
+    fails too. Only provider errors fall back: tool errors, bugs and cancellation propagate unchanged,
+    and so does a failure of the fallback itself. A call already routed to the fallback tier isn't retried.
     """
     try:
         return await primary(), []
@@ -130,5 +132,7 @@ async def invoke_with_fallback(
         if decision.tier == "fallback" or not is_provider_error(exc):
             raise
         switched = fallback_decision(decision, exc)
-        logger.warning("%s: %s", decision.call_site, switched.reason)
+        logger.warning("%s: %s: %s", decision.call_site, switched.reason, str(exc)[:500])
+        if on_fallback is not None:
+            on_fallback(switched)
         return await fallback(), [switched]

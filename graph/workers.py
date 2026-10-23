@@ -6,6 +6,11 @@ worker_agent calls the model with the agent's tools bound. worker_tools runs the
 ToolNode(handle_tool_errors=True) and emits tool_call / tool_result trace events. After
 WORKER_MAX_TOOL_ROUNDS rounds, the model is called once more without tools to summarize.
 
+Every model call is routed (router.route() over the task type, SQL errors so far and papers in the
+instruction). A decision is emitted when the run starts and whenever the tier changes, e.g. data
+escalating after a failed run_sql. A provider error retries on the fallback tier, and a tier that
+failed stays on the fallback for the rest of the run.
+
 The parent-graph node maps the subgraph's result to a Finding and to retrieved_chunk_ids (every chunk
 any tool returned). Citations are validated against the sources this run's tools returned: an ID
 that no tool returned is replaced with [unverified] and reported as an invalid_citation error, and
@@ -15,6 +20,7 @@ Citable sources are chunks (search_corpus, get_chunks), web results (Tavily) and
 """
 
 import json
+import operator
 import re
 import time
 from collections.abc import Awaitable, Callable, Iterable
@@ -24,7 +30,7 @@ from urllib.parse import urlsplit
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -32,10 +38,12 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from agents.registry import AgentSpec
 from config import worker_max_tool_rounds
-from graph.state import AgentError, Citation, Finding, OrchestratorState
+from graph.state import AgentError, Citation, Finding, OrchestratorState, RoutingDecision
 from graph.supervisor import latest_question
-from graph.trace import emit_trace
+from graph.trace import emit_routing, emit_trace
+from llm import Models, Tier, resolve_models
 from rag.citations import attribution_mismatches, mark_unverified, validate
+from router import RouteFeatures, invoke_with_fallback, papers_in_scope, route, sql_errored
 
 WorkerNode = Callable[[OrchestratorState], Awaitable[dict]]
 
@@ -55,8 +63,10 @@ FIX_ATTRIBUTION = (
 class WorkerState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     instruction: str
+    task_type: str
     rounds: int
     step: int | None  # the supervisor step that dispatched this worker, for trace events
+    routing: Annotated[list[RoutingDecision], operator.add]
 
 
 def tool_text(message: ToolMessage) -> str:
@@ -213,19 +223,26 @@ def retrieved_chunk_ids(messages: list[AnyMessage]) -> list[str]:
     return ids
 
 
+def failed_tiers(routing: list[RoutingDecision]) -> set[str]:
+    """Tiers that failed with a provider error this run (each fallback decision follows the one that failed)."""
+    return {routing[i - 1].tier for i, d in enumerate(routing) if d.fallback and i > 0}
+
+
 def make_worker(
     spec: AgentSpec,
     tools: list[BaseTool] | Callable[[], list[BaseTool]],
-    llm: BaseChatModel,
+    llm: BaseChatModel | Models,
     *,
     unavailable_notes: Iterable[str] | Callable[[], Iterable[str]] = (),
 ) -> WorkerNode:
     """Build the parent-graph node for one worker.
 
+    `llm` is one model for every tier (tests) or a Models resolver that the router picks from per call.
     `tools` and `unavailable_notes` may be callables. They are then read at the start of every run, so
     a server that went down (or came back) since the graph was built is reflected in the next run.
     """
     current_tools = tools if callable(tools) else (lambda: tools)
+    models = resolve_models(llm)
 
     def max_tool_rounds() -> int:
         return spec.max_tool_rounds or worker_max_tool_rounds()
@@ -233,8 +250,32 @@ def make_worker(
     current_notes = unavailable_notes if callable(unavailable_notes) else (lambda: unavailable_notes)
     base_prompt = spec.prompt_file.read_text()
 
+    async def routed_call(decision: RoutingDecision, step: int | None, previous: list[RoutingDecision],
+                          call: Callable[[Tier], Awaitable[AIMessage]]) -> tuple[AIMessage, list[RoutingDecision]]:
+        """Run one model call on the decision's tier, with fallback. Returns the reply and the new decisions."""
+        if decision.tier in failed_tiers(previous):
+            return await call("fallback"), []  # this tier already failed this run; don't wait for it again
+        new: list[RoutingDecision] = []
+        last = next((d for d in reversed(previous) if not d.fallback), None)
+        if last is None or last.tier != decision.tier:
+            new.append(decision)
+            emit_routing(decision, step=step)
+
+        def switched(fallback: RoutingDecision) -> None:
+            new.append(fallback)
+            emit_routing(fallback, step=step)
+
+        reply, _ = await invoke_with_fallback(decision, lambda: call(decision.tier), lambda: call("fallback"), switched)
+        return reply, new
+
     def build_subgraph(run_tools: list[BaseTool], system_prompt: str):
-        bound = llm.bind_tools(run_tools) if run_tools else llm
+        bound_models: dict[Tier, Runnable] = {}
+
+        def bound(tier: Tier) -> Runnable:
+            if tier not in bound_models:
+                bound_models[tier] = models(tier).bind_tools(run_tools) if run_tools else models(tier)
+            return bound_models[tier]
+
         tool_node = ToolNode(run_tools, handle_tool_errors=True)
 
         async def worker_agent(state: WorkerState) -> dict:
@@ -242,11 +283,17 @@ def make_worker(
             # The model doesn't stop on its own; telling it the budget lets it plan its last searches.
             budget = round_budget(state["rounds"], max_rounds)
             messages = [SystemMessage(f"{system_prompt}\n\n{budget}"), *state["messages"]]
+            decision = route(spec.name, RouteFeatures(task_type=state["task_type"], sql_errored=sql_errored(state["messages"]),
+                                                      papers_in_scope=papers_in_scope(state["instruction"])))
             if state["rounds"] >= max_rounds:
                 emit_trace(spec.name, "decision", step=state["step"], agent=spec.name,
                            detail=f"tool round cap ({max_rounds}) reached; summarizing without tools")
-                return {"messages": [await llm.ainvoke([*messages, HumanMessage(SUMMARIZE_NOW)])]}
-            return {"messages": [await bound.ainvoke(messages)]}
+                reply, new = await routed_call(decision, state["step"], state["routing"], lambda tier: models(tier).ainvoke(
+                    [*messages, HumanMessage(SUMMARIZE_NOW)]))
+            else:
+                reply, new = await routed_call(decision, state["step"], state["routing"],
+                                               lambda tier: bound(tier).ainvoke(messages))
+            return {"messages": [reply], "routing": new}
 
         async def worker_tools(state: WorkerState, config: RunnableConfig) -> dict:
             calls = state["messages"][-1].tool_calls
@@ -280,11 +327,12 @@ def make_worker(
             f"Today's date: {date.today().isoformat()}"  # so "this month" means something
         )
         result = await build_subgraph(list(current_tools()), system_prompt).ainvoke(
-            {"messages": [HumanMessage(task)], "instruction": state.get("instruction", ""), "rounds": 0,
-             "step": state.get("step")},
+            {"messages": [HumanMessage(task)], "instruction": state.get("instruction", ""),
+             "task_type": state.get("task_type") or "general", "rounds": 0, "step": state.get("step"), "routing": []},
             {"recursion_limit": 2 * max_tool_rounds() + 4},
         )
         messages = result["messages"]
+        routing: list[RoutingDecision] = list(result["routing"])
         final = next((m for m in reversed(messages) if isinstance(m, AIMessage)), AIMessage(""))
         content = final.text
         errors: list[AgentError] = []
@@ -297,7 +345,12 @@ def make_worker(
                        detail=f"attribution check: {len(mismatches)} claim(s) cite a source that doesn't mention "
                               "the paper they name; asking for a fix")
             fix = HumanMessage(FIX_ATTRIBUTION.format(problems=_describe(mismatches)))
-            revised = (await llm.ainvoke([SystemMessage(system_prompt), *messages, fix])).text
+            # The fix stays on the run's last routed tier (or its fallback, if that tier failed).
+            decision = next(d for d in reversed(routing) if not d.fallback)
+            reply, new = await routed_call(decision, state.get("step"), routing,
+                                           lambda t: models(t).ainvoke([SystemMessage(system_prompt), *messages, fix]))
+            routing += new
+            revised = reply.text
             content = revised or content
             if mismatches := attribution_mismatches(content, sources):
                 emit_trace(spec.name, "error", step=state.get("step"), agent=spec.name,
@@ -326,6 +379,7 @@ def make_worker(
             "findings": [Finding(agent=spec.name, content=content, citations=report.valid,
                                  grounded=bool(report.valid) or any_rows, queries=queries)],
             "retrieved_chunk_ids": retrieved_chunk_ids(messages),
+            "routing": routing,
         }
         return update | ({"errors": errors} if errors else {})
 

@@ -20,12 +20,14 @@ from collections.abc import Awaitable, Callable, Collection
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import Runnable
 
 from agents.registry import AGENTS, PROMPTS_DIR
 from config import max_supervisor_steps, max_worker_retries
-from graph.state import AgentError, Dispatch, Finding, OrchestratorState, SupervisorDecision
-from graph.trace import emit_trace
-from llm import get_llm
+from graph.state import AgentError, Dispatch, Finding, OrchestratorState, RoutingDecision, SupervisorDecision
+from graph.trace import emit_routing, emit_trace
+from llm import Models, Tier, resolve_models
+from router import RouteFeatures, invoke_with_fallback, route
 
 logger = logging.getLogger("graph.supervisor")
 
@@ -123,12 +125,21 @@ def _unavailable_message(worker: str) -> str:
 
 
 def make_supervisor(
-    llm: BaseChatModel | None, worker_names: Collection[str]
+    llm: BaseChatModel | Models | None, worker_names: Collection[str]
 ) -> Callable[[OrchestratorState], Awaitable[dict]]:
-    """Build the supervisor node. `worker_names` are the workers wired into the graph."""
+    """Build the supervisor node. `worker_names` are the workers wired into the graph.
+
+    `llm` is one model for every tier (tests) or a Models resolver; None means the configured providers.
+    """
     # Routing is a short classification: low thinking measured 2.5 s median vs 3.2 s, same decisions.
-    model = llm if llm is not None else get_llm("fast", thinking_level="low")  # Phase 5 swaps this for router.route()
-    decider = model.with_structured_output(SupervisorDecision).with_config(tags=["supervisor"])
+    models = resolve_models(llm, thinking_level="low")
+    deciders: dict[Tier, Runnable] = {}
+
+    def decider(tier: Tier) -> Runnable:
+        if tier not in deciders:
+            deciders[tier] = models(tier).with_structured_output(SupervisorDecision).with_config(tags=["supervisor"])
+        return deciders[tier]
+
     system_prompt = (PROMPTS_DIR / "supervisor.md").read_text().replace("{workers}", _roster(worker_names))
 
     async def supervisor(state: OrchestratorState) -> dict:
@@ -144,10 +155,19 @@ def make_supervisor(
             emit_trace("supervisor", "exit", step=step, detail="next=synthesize", ms=round((time.perf_counter() - start) * 1000))
             return {"step": step, "next": "synthesize", "instruction": "", "task_type": state.get("task_type") or "general"}
 
+        routing = [route("supervisor", RouteFeatures(task_type=state.get("task_type") or "general"))]
+        emit_routing(routing[0], step=step)
+
+        def switched(fallback: RoutingDecision) -> None:
+            routing.append(fallback)
+            emit_routing(fallback, step=step)
+
+        messages = [SystemMessage(system_prompt), HumanMessage(_context(state, step, max_steps))]
         decision: SupervisorDecision | None = None
         failure_kind, failure = "", ""
         try:
-            raw = await decider.ainvoke([SystemMessage(system_prompt), HumanMessage(_context(state, step, max_steps))])
+            raw, _ = await invoke_with_fallback(routing[0], lambda: decider(routing[0].tier).ainvoke(messages),
+                                                lambda: decider("fallback").ainvoke(messages), switched)
             decision = raw if isinstance(raw, SupervisorDecision) else SupervisorDecision.model_validate(raw)
         except ValueError as exc:  # OutputParserException and pydantic's ValidationError: unreadable output
             failure_kind, failure = "supervisor_parse_error", type(exc).__name__
@@ -186,7 +206,7 @@ def make_supervisor(
                 error = AgentError(agent=decision.next, kind="repeated_dispatch",
                                    message=f"The same request was just sent to {decision.next}; not repeating it.")
 
-        update: dict = {"step": step, "task_type": decision.task_type if decision else "general"}
+        update: dict = {"step": step, "task_type": decision.task_type if decision else "general", "routing": routing}
         if error is not None:
             emit_trace("supervisor", "error", step=step, agent=error.agent, detail=f"{error.kind}: {error.message}")
             update |= {"next": "synthesize", "instruction": "", "errors": [error]}

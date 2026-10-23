@@ -33,6 +33,8 @@ def format_trace(event: dict) -> str:
     who = event["node"] if not event.get("agent") or event["agent"] == event["node"] else f"{event['node']}/{event['agent']}"
     if event["kind"] == "decision":
         text = f"{who} decision → {event['detail']}"
+    elif event["kind"] == "routing":
+        text = f"{who} routing → {event['detail']}"
     else:
         text = f"{who} {event['kind']}" + (f": {event['detail']}" if event.get("detail") else "")
     if event.get("ms") is not None:
@@ -76,6 +78,7 @@ async def run_turn(graph, mcp: MCPTools, question: str) -> None:
 
     print_sources(final)
     print_queries(final.get("findings", []))
+    print_routing(final.get("routing", []))
     print_errors(final.get("errors", []))
     summary = (
         f"steps={final.get('step', 0)} "
@@ -111,6 +114,13 @@ def print_queries(findings: list) -> None:
             print(f"\nSQL run by {finding.agent}:")
             for query in finding.queries:
                 print(DIM + "\n".join(f"  {line}" for line in query.splitlines()) + RESET)
+
+
+def print_routing(routing: list) -> None:
+    """Each routing decision, in order: call site, tier, provider and model, and fallbacks."""
+    if routing:
+        print(f"\n{DIM}Routing: " + "; ".join(
+            f"{d.call_site} {d.tier}/{d.provider}" + (" (fallback)" if d.fallback else "") for d in routing) + RESET)
 
 
 def print_errors(errors: list) -> None:
