@@ -14,6 +14,31 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Investigation: the summary timeout and the 5-paper hand-off (no code change)
+
+I timed every model and tool call (LangChain callback handler, `WORKER_TIMEOUT_S=300` for the probe
+only) over 6 anti-aliasing runs and 5 "most-cited 2024 papers" hand-offs. No run timed out.
+
+**Timeout: mostly the model writing slowly, not our side.**
+- Summary worker: 18–26 s (anti-aliasing), 24–32 s (hand-off). Model calls account for all but ~1 s.
+- Tool rounds take 0.4–2.2 s, even with 11 `search_corpus` calls in parallel.
+- The final write-up call dominates: 1,500–2,900 output tokens at a steady ~125 tokens/s, so 11–23 s.
+  The searching calls before it take 2–6 s each.
+- The provider spikes now and then: one supervisor call took 9.2 s for 83 tokens (usual ~2.5 s).
+- Likely cause of the 163 s turn: it happened before the round budget, when every summary run used
+  all 4 rounds plus a forced write-up (~5 model calls on longer inputs, roughly 45–50 s). One spike
+  on top would pass 60 s. Unproven: that run's trace was lost.
+- Remaining margin: ~28 s in the worst run. Phase 5's move of `summary` to Claude Sonnet may eat
+  into it. Options, not implemented: a length budget per paper in `prompts/summary.md`, or a
+  timeout per worker.
+
+**2024 hand-off: the supervisor's choice, not a dropped ID.**
+- In all 5 runs the supervisor passed 10 IDs and `summary` searched and cited all 10.
+- The earlier 5-paper run had 1 round with 5 tool calls. `summary` makes one search per ID (plus
+  usually one metadata call) in one round, so that matches about 4–5 IDs handed over: the supervisor
+  likely passed fewer. That's allowed, since the question gives no count. My measurement script
+  hadn't recorded the instruction; the CLI trace does.
+
 ### 2026-10-22 — Summary worker stops on its own: round budget in the prompt
 
 **Correction:** the 4e entry says "Gemini doesn't reliably batch tool calls". The traces show that
