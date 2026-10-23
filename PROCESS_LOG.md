@@ -14,6 +14,13 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-22 — Phase 5 prep: the Anthropic dependency
+
+- Installed `langchain-anthropic==1.7.6` (pulls in `anthropic` 1.17.0) for the strong tier and pinned
+  it in `requirements.txt`. `langchain-openai==1.7.2` (fallback tier) was already pinned.
+- `langchain-core` stayed at 1.6.13 and `pip check` reports no conflicts.
+- **Verified:** `pytest tests/` gives 122 passed, 2 skipped.
+
 ### 2026-10-22 — Investigation: the summary timeout and the 5-paper hand-off (no code change)
 
 I timed every model and tool call (LangChain callback handler, `WORKER_TIMEOUT_S=300` for the probe
