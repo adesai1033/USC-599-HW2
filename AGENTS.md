@@ -315,7 +315,7 @@ heartbeat comment line is sent every 15 s. Events, in order of first appearance:
 | Event | Payload |
 |---|---|
 | `routing` | a `RoutingDecision` (one per LLM call site) |
-| `trace` | `{step, node, kind: enter\|exit\|tool_call\|tool_result\|error, agent, detail, ms}` |
+| `trace` | `{step, node, kind: enter\|exit\|decision\|tool_call\|tool_result\|error, agent, detail, ms}`; a supervisor `decision` also carries `decision: {next, task_type, reason, instruction}` |
 | `token` | `{text}` — from `synthesize` only |
 | `citations` | `{valid: [{id, arxiv_id, title, section, page, url, source}], invalid: [id]}` |
 | `error` | `{message}` — user-safe text, no stack traces, no secrets |

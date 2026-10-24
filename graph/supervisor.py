@@ -151,9 +151,11 @@ def make_supervisor(
         failures, retries = _failures(state), max_worker_retries()
         if worker_names and all(failures.get(w, 0) > retries for w in worker_names):
             # Nothing left to dispatch: skip the model call.
-            emit_trace("supervisor", "decision", step=step, detail="synthesize: every worker failed past its retries")
+            task_type, reason = state.get("task_type") or "general", "every worker failed past its retries"
+            emit_trace("supervisor", "decision", step=step, detail=f"synthesize: {reason}",
+                       decision={"next": "synthesize", "instruction": "", "task_type": task_type, "reason": reason})
             emit_trace("supervisor", "exit", step=step, detail="next=synthesize", ms=round((time.perf_counter() - start) * 1000))
-            return {"step": step, "next": "synthesize", "instruction": "", "task_type": state.get("task_type") or "general"}
+            return {"step": step, "next": "synthesize", "instruction": "", "task_type": task_type}
 
         routing = [route("supervisor", RouteFeatures(task_type=state.get("task_type") or "general"))]
         emit_routing(routing[0], step=step)
@@ -180,7 +182,8 @@ def make_supervisor(
 
         if decision is not None:
             emit_trace("supervisor", "decision", step=step,
-                       detail=f"{decision.next} ({decision.task_type}): {decision.reason}")
+                       detail=f"{decision.next} ({decision.task_type}): {decision.reason}",
+                       decision=decision.model_dump())
 
         error: AgentError | None = None
         if decision is None:

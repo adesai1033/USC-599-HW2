@@ -1,9 +1,14 @@
-"""FastAPI app: GET / (static), POST /chat/stream (SSE), GET /health; reads PORT; lifespan init."""
+"""FastAPI app: GET / (static), POST /chat/stream (SSE), GET /health; reads PORT; lifespan init.
 
+The MCP sessions and the compiled graph start in a background task, so /health answers during a cold
+start while the servers spawn and the Chroma index loads. /chat/stream waits for that task.
+"""
+
+import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated
 
@@ -11,20 +16,27 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
+from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, Field, StringConstraints
 
 from config import get_settings
-from llm import get_llm
-from mcp_client import install_log_redaction
-from streaming import sse_event, with_heartbeat
+from graph.build import build_graph
+from mcp_client import MCPTools, install_log_redaction, load_manifests
+from streaming import graph_frames, sse_event, with_heartbeat
 
 logger = logging.getLogger("paper_assistant")
 
 STATIC_DIR = Path(__file__).parent / "static"
-SYSTEM_PROMPT = "You are a research assistant for 3D computer vision papers."
-USER_SAFE_ERROR = "Sorry, the language model is unavailable right now. Please try again."
+STARTUP_FAILED_MESSAGE = "Sorry, the assistant failed to start. Please try again later."
 SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+async def make_runtime() -> tuple[MCPTools, CompiledStateGraph]:
+    """Connect the MCP servers (failures are recorded, not raised) and compile the graph."""
+    mcp = MCPTools(load_manifests())
+    await mcp.start()
+    return mcp, build_graph(mcp=mcp)
 
 
 @asynccontextmanager
@@ -36,7 +48,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     install_log_redaction()
     logger.info("starting with %r", settings)
-    yield
+    app.state.runtime = asyncio.create_task(make_runtime())
+    try:
+        yield
+    finally:
+        app.state.runtime.cancel()
+        with suppress(Exception, asyncio.CancelledError):  # startup failed or was cut short
+            mcp, _ = await app.state.runtime
+            await mcp.aclose()
 
 
 app = FastAPI(title="3D Vision Paper Research Assistant", lifespan=lifespan)
@@ -48,31 +67,19 @@ class ChatRequest(BaseModel):
     message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=8000)]
 
 
-def _ms_since(start: float) -> int:
-    return round((time.perf_counter() - start) * 1000)
-
-
-async def _chat_frames(request: ChatRequest, start: float) -> AsyncIterator[str]:
-    ttft_ms: int | None = None
+async def _chat_frames(runtime: asyncio.Task, request: ChatRequest, start: float) -> AsyncIterator[str]:
     try:
-        messages = [SystemMessage(SYSTEM_PROMPT), HumanMessage(request.message)]
-        async for chunk in get_llm("fast").astream(messages):
-            text = chunk.text
-            if not text:
-                continue
-            if ttft_ms is None:
-                ttft_ms = _ms_since(start)
-            yield sse_event("token", {"text": text})
+        mcp, graph = await runtime
     except Exception:
-        logger.exception("chat stream failed for session_id=%s", request.session_id)
-        yield sse_event("error", {"message": USER_SAFE_ERROR})
-    yield sse_event(
-        "done",
-        {
-            "session_id": request.session_id,
-            "timings": {"ttft_ms": ttft_ms, "total_ms": _ms_since(start)},
-        },
-    )
+        logger.exception("runtime startup failed")
+        yield sse_event("error", {"message": STARTUP_FAILED_MESSAGE})
+        yield sse_event("done", {"session_id": request.session_id, "timings": {"ttft_ms": None, "retrieval_ms": 0,
+                                 "llm_ms": 0, "total_ms": round((time.perf_counter() - start) * 1000)}, "usage": {}})
+        return
+    mcp.refresh()  # one reconnect attempt per turn for unhealthy servers, in the background
+    inputs = {"session_id": request.session_id, "messages": [HumanMessage(request.message)], "step": 0}
+    async for frame in graph_frames(graph, inputs, session_id=request.session_id, start=start):
+        yield frame
 
 
 @app.get("/health")
@@ -84,7 +91,7 @@ async def health() -> dict[str, str]:
 async def chat_stream(request: ChatRequest) -> StreamingResponse:
     start = time.perf_counter()
     return StreamingResponse(
-        with_heartbeat(_chat_frames(request, start)),
+        with_heartbeat(_chat_frames(app.state.runtime, request, start)),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )

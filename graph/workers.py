@@ -312,9 +312,10 @@ def make_worker(
             start = time.perf_counter()
             update = await tool_node.ainvoke(state, config)
             ms = round((time.perf_counter() - start) * 1000)
-            for message in update["messages"]:
+            # The tools in one round run together, so the round's time goes on its first result only.
+            for i, message in enumerate(update["messages"]):
                 emit_trace(spec.name, "tool_result", step=state["step"], agent=spec.name,
-                           detail=f"{message.name}: {summarize_result(message)}", ms=ms)
+                           detail=f"{message.name}: {summarize_result(message)}", ms=ms if i == 0 else None)
             # The model doesn't stop on its own; telling it the budget lets it plan its last searches.
             budget = HumanMessage(round_budget(state["rounds"] + 1, max_tool_rounds()))
             return {"messages": [*update["messages"], budget], "rounds": state["rounds"] + 1}

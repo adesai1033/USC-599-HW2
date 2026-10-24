@@ -1,52 +1,49 @@
 import asyncio
 import io
-import json
 import logging
 
 import pytest
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessageChunk
 
 import config
 import main
 import streaming
+from graph.build import build_graph
+from graph.synthesize import ANSWER_FAILED_NOTICE
+from tests.sse import parse_sse, serve
+from tests.test_graph_skeleton import ScriptedSupervisor, answer_llm, decision
+from tests.test_robustness import BreakingStream
 
 
-class FakeLLM:
-    def __init__(self, pieces, fail_after=None):
-        self.pieces = pieces
-        self.fail_after = fail_after
-
-    async def astream(self, messages):
-        for i, piece in enumerate(self.pieces):
-            if self.fail_after is not None and i == self.fail_after:
-                raise RuntimeError("provider exploded")
-            yield AIMessageChunk(content=piece)
+@pytest.fixture(autouse=True)
+def no_real_runtime(monkeypatch):
+    """No test here starts the real MCP servers; tests that post a message serve their own graph."""
+    serve(monkeypatch, make=_never_started)
 
 
-def parse_sse(body: str) -> list[tuple[str, dict]]:
-    events = []
-    for frame in body.split("\n\n"):
-        lines = [l for l in frame.split("\n") if l and not l.startswith(":")]
-        if not lines:
-            continue
-        name = next(l[len("event: "):] for l in lines if l.startswith("event: "))
-        data = next(l[len("data: "):] for l in lines if l.startswith("data: "))
-        events.append((name, json.loads(data)))
-    return events
+async def _never_started():
+    raise AssertionError("this test must not start the runtime")
 
 
-def post_chat(monkeypatch, llm):
-    monkeypatch.setattr(main, "get_llm", lambda tier: llm)
+def direct_graph(synthesize_llm):
+    """A graph whose supervisor goes straight to synthesize, which streams from `synthesize_llm`."""
+    return build_graph(workers={}, supervisor_llm=ScriptedSupervisor([decision("synthesize")]),
+                       synthesize_llm=synthesize_llm)
+
+
+def post_chat(monkeypatch, synthesize_llm):
+    serve(monkeypatch, direct_graph(synthesize_llm))
     with TestClient(main.app) as client:
         return client.post("/chat/stream", json={"session_id": "s1", "message": "What is NeRF?"})
 
 
-def test_health_does_not_call_llm(monkeypatch):
-    def boom(tier):
-        raise AssertionError("health must not touch the LLM")
+def test_health_does_not_wait_for_the_runtime(monkeypatch):
+    started = asyncio.Event()
 
-    monkeypatch.setattr(main, "get_llm", boom)
+    async def slow_start():
+        await started.wait()  # never set: the MCP servers are still spawning
+
+    serve(monkeypatch, make=slow_start)
     with TestClient(main.app) as client:
         response = client.get("/health")
     assert response.status_code == 200
@@ -54,7 +51,7 @@ def test_health_does_not_call_llm(monkeypatch):
 
 
 def test_stream_emits_tokens_and_one_done(monkeypatch):
-    response = post_chat(monkeypatch, FakeLLM(["Neural ", "radiance ", "fields"]))
+    response = post_chat(monkeypatch, answer_llm("Neural radiance fields"))
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.headers["cache-control"] == "no-cache"
@@ -73,13 +70,28 @@ def test_stream_emits_tokens_and_one_done(monkeypatch):
 
 
 def test_llm_failure_mid_stream_yields_error_then_done(monkeypatch):
-    response = post_chat(monkeypatch, FakeLLM(["partial ", "never"], fail_after=1))
+    response = post_chat(monkeypatch, BreakingStream(tokens=["partial "]))
     assert response.status_code == 200
 
-    names = [name for name, _ in parse_sse(response.text)]
-    assert names == ["token", "error", "done"]
-    error = parse_sse(response.text)[1][1]
-    assert "provider exploded" not in error["message"]
+    events = parse_sse(response.text)
+    names = [name for name, _ in events]
+    assert names[-2:] == ["error", "done"] and names.count("done") == 1
+    assert ANSWER_FAILED_NOTICE in "".join(d["text"] for n, d in events if n == "token")
+    error = dict(events)["error"]
+    assert "429" not in error["message"] and "Traceback" not in response.text
+
+
+def test_startup_failure_yields_error_then_done(monkeypatch):
+    async def broken():
+        raise RuntimeError("chroma index missing")
+
+    serve(monkeypatch, make=broken)
+    with TestClient(main.app) as client:
+        response = client.post("/chat/stream", json={"session_id": "s1", "message": "What is NeRF?"})
+    assert response.status_code == 200
+    events = parse_sse(response.text)
+    assert [n for n, _ in events] == ["error", "done"]
+    assert "chroma" not in events[0][1]["message"]
 
 
 def test_sse_event_format():
@@ -122,11 +134,8 @@ def test_settings_repr_redacts_key():
     {"session_id": "a/b", "message": "hi"},           # not a safe Firestore document ID
     {"session_id": "s1", "message": "x" * 8001},
 ])
-def test_invalid_requests_are_rejected_before_the_llm(monkeypatch, body):
-    def boom(tier):
-        raise AssertionError("invalid requests must not reach the LLM")
-
-    monkeypatch.setattr(main, "get_llm", boom)
+def test_invalid_requests_are_rejected_before_the_graph(body):
+    # The autouse fixture's runtime fails if anything awaits it.
     with TestClient(main.app) as client:
         assert client.post("/chat/stream", json=body).status_code == 422
 

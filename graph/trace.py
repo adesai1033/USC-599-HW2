@@ -1,8 +1,10 @@
 """Trace events, written to LangGraph's custom stream: {step, node, kind, agent, detail, ms}.
 
 A routing decision is a trace event of kind "routing" that also carries the full RoutingDecision under
-"routing"; Phase 6 sends it as the `routing` SSE event. Inside recording(), each emitted decision is
-also collected, so a worker that fails can still report the decisions it made (graph/guard.py).
+"routing"; streaming.py sends it as the `routing` SSE event. The supervisor's choice is a "decision"
+event that also carries {next, task_type, reason, instruction} under "decision", for the UI's routing
+badge. Inside recording(), each emitted routing decision is also collected, so a worker that fails can
+still report the decisions it made (graph/guard.py).
 """
 
 from collections.abc import Iterator
@@ -38,9 +40,11 @@ def emit_trace(
     agent: str | None = None,
     detail: str = "",
     ms: int | None = None,
+    decision: dict | None = None,
 ) -> None:
     """Write one trace event. A no-op outside a graph run, or in a run not streaming "custom"."""
-    _write({"step": step, "node": node, "kind": kind, "agent": agent, "detail": detail, "ms": ms})
+    event = {"step": step, "node": node, "kind": kind, "agent": agent, "detail": detail, "ms": ms}
+    _write(event | {"decision": decision} if decision is not None else event)
 
 
 def emit_routing(decision: RoutingDecision, *, step: int | None = None) -> None:

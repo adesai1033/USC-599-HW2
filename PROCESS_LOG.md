@@ -14,6 +14,64 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-23 — Phase 6: the graph streams over SSE, and the frontend shows routing, trace and citations
+
+**Backend**
+- `streaming.graph_frames()` runs the graph and maps its output to the SSE contract:
+  - each routing trace becomes a `routing` event (the full `RoutingDecision`);
+  - every other trace event becomes `trace`;
+  - synthesize chunks become `token`;
+  - the validated report becomes `citations`;
+  - a `synthesize_error` or a crashed run becomes `error`;
+  - `done` is always sent last.
+- Answer text that never streamed (the failure notice) goes out as a final token.
+- `done` carries the timings and the token usage:
+  - `ttft_ms`, `retrieval_ms` (the sum of tool round times), `llm_ms` and `total_ms`;
+  - `usage` per provider, from a callback handler keyed on LangChain's `ls_provider`.
+- `main.py` now runs the real graph. The MCP servers and the graph start in a background task, so
+  `/health` answers during a cold start, and `/chat/stream` waits for that task. If startup failed,
+  the stream gives `error` then `done`. The Phase 1 single-model path is gone.
+- **Supervisor decision:** the `decision` trace event now also carries `{next, task_type, reason,
+  instruction}` for the UI. AGENTS.md's trace `kind` list now includes `decision`.
+- **Worker tool time:** a tool round's time is recorded on its first result only, so
+  `retrieval_ms` doesn't count a parallel round twice.
+
+**Frontend** (vanilla JS): each answer is a card with:
+- **Routing badge:** the path that actually ran (`data metadata → summary lit_review →
+  synthesize`), with failed workers struck through. It has a provider pill per LLM call, colored
+  by tier and marked ⚠ on a fallback, and a "Why this route" list of every supervisor and router
+  reason.
+- **Answer:** an escape-first Markdown renderer (paragraphs, headings, lists, tables, code).
+- **Citation chips:** `[id]` tags become chips, and after `citations` they link out.
+  - Corpus chips link to arXiv, with title, section and page on hover.
+  - Web chips link to their page, labeled by hostname.
+  - `[db:]` chips are labeled "paper database".
+  - Unverified IDs are struck through.
+- **Sources list:** grouped by paper.
+- **Trace panel:** collapsible, with step, node, kind, detail and ms. Rows append live.
+- **Footer:** TTFT, retrieval, LLM, total, and tokens per provider.
+
+**Verified**
+- `pytest tests/` gives 163 passed, 2 skipped. New tests are in `tests/test_sse_graph.py` (event
+  order, routing payloads, structured decision, citation split, usage and retrieval time, crash →
+  error + done, no supervisor JSON in tokens). `tests/test_phase1.py` now serves fake graphs
+  through a `make_runtime` seam.
+- **Live with curl:** routing/trace, then 51 tokens, then citations and done.
+- **Live in Chrome, all four frontend parts shown:**
+  - The comparison went to summary on the strong tier, with 12 sources across 3 papers.
+  - Most-cited 2024 went data → summary → synthesize on the strong tier, with `[db:]` chips.
+  - The point cloud question went straight to synthesize with no tools.
+  - "This month" used web chips.
+  - Mip-NeRF 360 PSNR went data → research. The `results` table is still unseeded, so the
+    numbers came from the corpus.
+- **Broken-corpus probe:** the app starts. Research falls back to Tavily, the answer says corpus
+  search was unavailable, and the stream ends in `done`.
+
+**Still open**
+- TTFT is 25–50 s on multi-agent questions. Phase 9 will measure it.
+- History (Phase 7): each turn is still independent.
+- Seeding `results`.
+
 ### 2026-10-23 — Phase 5 follow-ups: Claude's thinking blocks, DROP TABLE, routing records, stalls
 
 **1. The remaining Claude 400 was the same thinking-signature error.** The probe caught its message:
