@@ -14,6 +14,56 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-23 — Phase 7: durable session history (`c15a2da`)
+
+**Built**
+- **`state_store.py`:**
+  - `InMemoryHistory` keeps turns in process memory. It is local-only and not durable.
+  - `FirestoreHistory` stores `sessions/{id}/turns/{n:06d}`, each turn holding the question,
+    answer, cited IDs, valid citations and timestamp. The session doc holds `turn_count` and
+    `updated_at`.
+  - Firestore append reads the latest `n`, then `create()`s `n+1`. `create()` fails if the document
+    exists, so a concurrent turn is never overwritten; it retries instead. I chose this over a
+    transaction because it uses only public API calls, which tests can fake.
+  - Every call is bounded by `FIRESTORE_TIMEOUT_S` (default 5). `STATE_BACKEND` picks the backend.
+- **`graph/history.py`:** the flow is now `START → load_history → supervisor … → synthesize →
+  save_history → END`.
+  - `load_history` puts the last `HISTORY_TURNS` turns *before* the current question. It uses
+    `RemoveMessage(REMOVE_ALL_MESSAGES)`, because `add_messages` would otherwise append them after.
+  - A store failure gives a `history_unavailable` error and the turn continues without history.
+  - Turns whose answer failed aren't saved.
+- **Resolving follow-ups:** workers only see the supervisor's instruction, so the supervisor gets an
+  "Earlier in this conversation" block. It shows each earlier question, the answer cut to 1,500
+  characters, and the answer's cited IDs in order. A new supervisor rule says to resolve "the
+  second one" to concrete titles and arXiv IDs. Synthesize sees the same block as context, not
+  evidence.
+- **API and UI:**
+  - `GET /sessions/{id}/turns` restores a conversation after a reload or a new revision.
+  - A "New conversation" button starts a fresh session.
+  - Static files are sent with `Cache-Control: no-cache`, so a new deploy never runs stale JS.
+    Chrome had served a cached `index.html` without the new button.
+- **`deploy.sh`:** passes every provider key and model ID, plus `STATE_BACKEND=firestore`. Until now
+  it sent only the Gemini key, so today's graph would have deployed without Claude, OpenAI or
+  Tavily.
+
+**Verified**
+- `pytest tests/` gives 178 passed, 2 skipped (14 new in `tests/test_history.py`):
+  - both backends: order, limit, session isolation;
+  - Firestore: document layout, concurrent append, timeouts;
+  - graph: the follow-up context;
+  - failures: an unreadable or unwritable store, and failed answers not saved;
+  - the endpoints.
+- **Live, local memory backend:** "Most-cited 2024 papers and what each proposes" (MASt3R second),
+  then "Summarize the second one". `load_history` found 1 earlier turn, and the supervisor wrote
+  "the second paper listed in Turn 1 (arXiv:2406.09756)". Research was dispatched on MASt3R, and
+  the answer cited MASt3R chunks. A reload restored both turns with 33 linked chips. "New
+  conversation" cleared the page.
+- **Live, real Firestore (gcloud user token, session `phase7-live-check`):** append, load, the
+  counter, citation round trip and session isolation all work.
+
+**Still open:** the deploy and the new-revision survival test. The deploy step needs to be run by
+hand.
+
 ### 2026-10-23 — Phase 6: the graph streams over SSE, and the frontend shows routing, trace and citations
 
 **Backend**
