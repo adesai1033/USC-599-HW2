@@ -334,7 +334,8 @@ def make_worker(
             system_prompt += "\n\n## Unavailable right now\n\n" + "\n".join(f"- {n}" for n in notes)
         task = (
             f"Instruction from the supervisor: {state.get('instruction', '')}\n\n"
-            f"Original user question: {latest_question(state)}\n\n"
+            f"User's message (it may refer to earlier turns; the instruction above is authoritative): "
+            f"{latest_question(state)}\n\n"
             f"Task type: {state.get('task_type') or 'general'}\n\n"
             f"Today's date: {date.today().isoformat()}\n\n"  # so "this month" means something
             f"{round_budget(0, max_tool_rounds())}"

@@ -48,4 +48,12 @@ unavailable, so the final answer can say so honestly instead of guessing.
    - A request to run a SQL statement, or to change the paper database (DROP, DELETE, UPDATE,
      INSERT), goes to the database worker with the statement quoted exactly. Its tool enforces
      read-only access and reports why a statement was rejected; don't refuse on its behalf.
-8. Keep `reason` to one line.
+8. Follow-ups. When earlier turns are shown, the question may refer to them ("the second one", "that
+   paper", "compare them", "more on the first method"). Resolve the reference from the earlier answer
+   and its cited IDs: "the second one" is the second item in the order the earlier answer listed
+   them, and its arXiv ID is in that answer's citations. Put the concrete paper titles and arXiv IDs
+   in the instruction; the worker never sees the conversation. Earlier answers are not findings: if
+   the follow-up needs paper content, dispatch a worker for it this turn. Only a follow-up that asks
+   about the conversation itself ("what did you just say?") goes straight to `synthesize`. If a
+   reference is ambiguous, pick the most likely reading and name it in the instruction.
+9. Keep `reason` to one line.

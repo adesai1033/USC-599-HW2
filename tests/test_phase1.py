@@ -152,3 +152,10 @@ def test_provider_keys_are_redacted_from_every_log_handler(monkeypatch):
     finally:
         uvicorn_logger.removeHandler(handler)
     assert "test-google-key" not in stream.getvalue() and "<redacted>" in stream.getvalue()
+
+
+def test_static_files_are_revalidated_so_a_new_deploy_serves_new_js():
+    with TestClient(main.app) as client:
+        first = client.get("/app.js")
+        again = client.get("/app.js", headers={"If-None-Match": first.headers["etag"]})
+    assert first.headers["cache-control"] == "no-cache" and again.status_code == 304

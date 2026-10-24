@@ -168,7 +168,7 @@ async def test_research_hands_a_web_url_to_summary_and_citations_survive_to_the_
     )
     final, traces = await run(graph, "Review how anti-aliasing has been addressed in radiance fields")
     assert [t["node"] for t in traces if t["kind"] == "enter"] == [
-        "supervisor", "research", "supervisor", "summary", "supervisor", "synthesize"]
+        "load_history", "supervisor", "research", "supervisor", "summary", "supervisor", "synthesize", "save_history"]
     assert BLOG_URL in supervisor.summary_instruction and BLOG_URL in summary_model.seen[0][-1].text
     assert any(t["agent"] == "summary" and t["detail"].startswith("tavily_extract(") for t in traces if t["kind"] == "tool_call")
     report = final["answer_citations"]

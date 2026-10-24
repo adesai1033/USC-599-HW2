@@ -24,6 +24,7 @@ from langchain_core.runnables import Runnable
 
 from agents.registry import AGENTS, PROMPTS_DIR
 from config import max_supervisor_steps, max_worker_retries, supervisor_timeout_s
+from graph.history import format_earlier_turns
 from graph.state import AgentError, Dispatch, Finding, OrchestratorState, RoutingDecision, SupervisorDecision
 from graph.trace import emit_routing, emit_trace
 from llm import Models, Tier, resolve_models
@@ -38,6 +39,7 @@ ERROR_SUMMARY = {
     "transport": "lost its connection to a tool server",
     "provider_error": "its language model provider returned an error",
     "worker_exception": "failed unexpectedly",
+    "history_unavailable": "earlier turns of the conversation couldn't be loaded",
     "worker_unavailable": "is not available",
     "invalid_citation": "cited sources it never retrieved; marked [unverified]",
     "attribution_mismatch": "cited a source about a different paper",
@@ -73,7 +75,10 @@ def _roster(worker_names: Collection[str]) -> str:
 
 def _context(state: OrchestratorState, step: int, max_steps: int) -> str:
     """The question plus everything gathered this turn, as the supervisor's user message."""
-    parts = [f"Question: {latest_question(state)}", f"Decision {step} of at most {max_steps}."]
+    parts = []
+    if earlier := format_earlier_turns(state):
+        parts.append(f"Earlier in this conversation (oldest first):\n\n{earlier}")
+    parts += [f"Question: {latest_question(state)}", f"Decision {step} of at most {max_steps}."]
     dispatches = state.get("dispatches", [])
     findings = state.get("findings", [])
     errors = state.get("errors", [])

@@ -16,6 +16,9 @@ to expand. Pick the details that answer what was asked, and leave out the rest. 
 
 ## Where the answer comes from
 
+- Earlier turns of the conversation, when shown, are context for reading the question ("the second
+  one" means what it meant there). They are not evidence: facts and citations come only from this
+  turn's findings, and IDs from earlier answers may be cited only if a finding cites them too.
 - If there are findings, answer from the findings only. Do not add facts, numbers or papers that are
   not in them. If they only partly answer the question, say what is missing.
 - If the task type is `general` and there are no findings, answer from your own knowledge, briefly.

@@ -90,7 +90,7 @@ async def test_no_workers_general_question_goes_straight_to_synthesize():
     supervisor = ScriptedSupervisor([decision("synthesize")])
     graph = build_graph(workers={}, supervisor_llm=supervisor, synthesize_llm=answer_llm())
     final, traces = await run(graph)
-    assert entered(traces) == ["supervisor", "synthesize"]
+    assert entered(traces) == ["load_history", "supervisor", "synthesize", "save_history"]
     assert final["messages"][-1].text == ANSWER
     assert final.get("dispatches", []) == [] and final.get("errors", []) == []
     assert final["step"] == 1 and supervisor.calls == 1
@@ -101,7 +101,7 @@ async def test_dispatch_follows_next_and_worker_returns_to_supervisor():
     supervisor = ScriptedSupervisor([decision("research", "explain 3DGS rasterization", "lookup"), decision("synthesize")])
     graph = build_graph(workers={"research": worker}, supervisor_llm=supervisor, synthesize_llm=answer_llm())
     final, traces = await run(graph, "How does 3D Gaussian Splatting render a novel view?")
-    assert entered(traces) == ["supervisor", "research", "supervisor", "synthesize"]
+    assert entered(traces) == ["load_history", "supervisor", "research", "supervisor", "synthesize", "save_history"]
     assert worker.instructions == ["explain 3DGS rasterization"]
     assert [d.worker for d in final["dispatches"]] == ["research"]
     assert [f.agent for f in final["findings"]] == ["research"]
@@ -116,7 +116,7 @@ async def test_step_limit_forces_synthesize(monkeypatch):
     final, traces = await run(graph)
     assert final["step"] == 3 and len(worker.instructions) == 2
     assert [e.kind for e in final["errors"]] == ["step_limit"]
-    assert entered(traces)[-1] == "synthesize" and final["messages"][-1].text == ANSWER
+    assert entered(traces)[-2:] == ["synthesize", "save_history"] and final["messages"][-1].text == ANSWER
 
 
 async def test_repeated_dispatch_is_refused():
@@ -137,7 +137,7 @@ async def test_unregistered_worker_is_unavailable_and_graph_completes():
     graph = build_graph(workers={"research": FakeWorker()}, supervisor_llm=supervisor, synthesize_llm=answer_llm())
     final, traces = await run(graph)
     assert [(e.agent, e.kind) for e in final["errors"]] == [("data", "worker_unavailable")]
-    assert entered(traces) == ["supervisor", "synthesize"]
+    assert entered(traces) == ["load_history", "supervisor", "synthesize", "save_history"]
     assert final.get("dispatches", []) == [] and final["messages"][-1].text == ANSWER
 
 
@@ -160,7 +160,7 @@ async def test_every_node_that_ran_has_enter_and_exit_traces():
     _, traces = await run(graph)
     enters = [t["node"] for t in traces if t["kind"] == "enter"]
     exits = [t["node"] for t in traces if t["kind"] == "exit"]
-    assert enters == exits == ["supervisor", "research", "supervisor", "synthesize"]
+    assert enters == exits == ["load_history", "supervisor", "research", "supervisor", "synthesize", "save_history"]
     assert all(t["ms"] is not None for t in traces if t["kind"] == "exit")
     synth_exit = next(t for t in traces if t["node"] == "synthesize" and t["kind"] == "exit")
     assert synth_exit["detail"].startswith("first token ") and f"{len(ANSWER.split())} words" in synth_exit["detail"]

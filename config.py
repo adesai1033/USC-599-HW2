@@ -83,6 +83,29 @@ def mcp_reconnect_backoff_s() -> float:
     return _env_number("MCP_RECONNECT_BACKOFF_S", 30, 0, float)
 
 
+def history_turns() -> int:
+    """HISTORY_TURNS (default 6): earlier turns of the session loaded into each new turn."""
+    return _env_number("HISTORY_TURNS", 6, 0)
+
+
+def state_backend() -> str:
+    """STATE_BACKEND: "firestore" on Cloud Run, "memory" (the default) locally and in tests."""
+    backend = os.environ.get("STATE_BACKEND", "memory").strip().lower()
+    if backend not in ("memory", "firestore"):
+        raise RuntimeError(f"STATE_BACKEND must be 'memory' or 'firestore', got {backend!r}.")
+    return backend
+
+
+def firestore_project_id() -> str | None:
+    """FIRESTORE_PROJECT_ID; None lets the client take the project from ADC."""
+    return os.environ.get("FIRESTORE_PROJECT_ID", "").strip() or None
+
+
+def firestore_timeout_s() -> float:
+    """FIRESTORE_TIMEOUT_S (default 5): limit for one history read or write."""
+    return _env_number("FIRESTORE_TIMEOUT_S", 5, 0.001, float)
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Read settings from the environment; raise if a required variable is missing."""

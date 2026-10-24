@@ -18,6 +18,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from agents.registry import PROMPTS_DIR
 from graph.guard import is_provider_error
+from graph.history import format_earlier_turns
 from graph.state import AgentError, Finding, OrchestratorState
 from graph.supervisor import latest_question
 from graph.trace import emit_routing, emit_trace
@@ -56,7 +57,9 @@ def make_synthesize(llm: BaseChatModel | Models | None) -> Callable[[Orchestrato
         start = time.perf_counter()
         emit_trace("synthesize", "enter", step=step)
         findings = state.get("findings", [])
+        earlier = format_earlier_turns(state)
         context = "\n\n".join([
+            *([f"Earlier in this conversation (context only, not evidence):\n\n{earlier}"] if earlier else []),
             f"Question: {latest_question(state)}",
             f"Task type: {state.get('task_type') or 'general'}",
             f"Today's date: {date.today().isoformat()}",

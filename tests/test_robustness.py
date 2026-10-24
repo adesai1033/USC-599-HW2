@@ -61,7 +61,7 @@ async def test_worker_exception_becomes_an_error_and_the_graph_answers():
     error = next(t for t in traces if t["kind"] == "error" and t["node"] == "research")
     assert error["detail"] == "worker_exception" and error["agent"] == "research" and error["ms"] is not None
     # The worker's node still emits its exit event, and control went back to the supervisor.
-    assert [t["node"] for t in traces if t["kind"] == "enter"] == ["supervisor", "research", "supervisor", "synthesize"]
+    assert [t["node"] for t in traces if t["kind"] == "enter"] == ["load_history", "supervisor", "research", "supervisor", "synthesize", "save_history"]
 
 
 async def test_slow_worker_times_out(monkeypatch):

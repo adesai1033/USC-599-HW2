@@ -1,9 +1,10 @@
 """Assembles the StateGraph, conditional edges, recursion limit.
 
-  START -> supervisor -> (worker -> supervisor)* -> synthesize -> END
+  START -> load_history -> supervisor -> (worker -> supervisor)* -> synthesize -> save_history -> END
 
 The conditional edge from the supervisor dispatches on state["next"]. The graph is compiled without
-a checkpointer: conversation history is the only cross-request state (Firestore, Phase 7).
+a checkpointer: the session history (state_store.py, Firestore on Cloud Run) is the only cross-request
+state.
 """
 
 import time
@@ -17,6 +18,7 @@ from langgraph.graph.state import CompiledStateGraph
 from agents.registry import WORKERS, available_workers
 from config import max_supervisor_steps
 from graph.guard import guarded
+from graph.history import make_load_history, make_save_history
 from graph.state import OrchestratorState
 from graph.supervisor import make_supervisor
 from graph.synthesize import make_synthesize
@@ -24,9 +26,11 @@ from graph.trace import emit_trace
 from graph.workers import WorkerNode, make_worker
 from llm import Models, resolve_models
 from mcp_client import MCPTools
+from state_store import History, InMemoryHistory
 
-# Each supervisor decision is at most two graph steps (supervisor, then a worker), plus synthesize.
-DEFAULT_CONFIG = {"recursion_limit": 2 * max_supervisor_steps() + 4}
+# Each supervisor decision is at most two graph steps (supervisor, then a worker), plus load_history,
+# synthesize and save_history.
+DEFAULT_CONFIG = {"recursion_limit": 2 * max_supervisor_steps() + 6}
 
 
 def _traced(name: str, worker: WorkerNode) -> WorkerNode:
@@ -48,6 +52,7 @@ def build_graph(
     supervisor_llm: BaseChatModel | Models | None = None,
     synthesize_llm: BaseChatModel | Models | None = None,
     mcp: MCPTools | None = None,
+    history: History | None = None,
 ) -> CompiledStateGraph:
     """Compile the orchestration graph. Dependencies are injectable so tests can pass fakes.
 
@@ -55,8 +60,10 @@ def build_graph(
     the registry's WORKERS, with its allowlisted tools from `mcp` (a started MCPTools) and the
     configured providers, from which router.route() picks a tier per call. Tools and "unavailable" notes are read from `mcp` at the start of each run, so
     server health changes reach the next run. Every worker node is wrapped by guarded(): a failure
-    becomes an AgentError and the graph returns to the supervisor.
+    becomes an AgentError and the graph returns to the supervisor. `history` stores the session's
+    turns; it defaults to a fresh in-memory store.
     """
+    history = history if history is not None else InMemoryHistory()
     if workers is None:
         if mcp is None:
             raise ValueError("build_graph needs a started MCPTools (mcp=...) to build the registry's workers")
@@ -70,15 +77,19 @@ def build_graph(
         }
 
     graph = StateGraph(OrchestratorState)
+    graph.add_node("load_history", make_load_history(history))
+    graph.add_node("save_history", make_save_history(history))
     graph.add_node("supervisor", make_supervisor(supervisor_llm, list(workers)))
     graph.add_node("synthesize", make_synthesize(synthesize_llm))
     for name, worker in workers.items():
         graph.add_node(name, _traced(name, guarded(name, worker)))
         graph.add_edge(name, "supervisor")
 
-    graph.add_edge(START, "supervisor")
+    graph.add_edge(START, "load_history")
+    graph.add_edge("load_history", "supervisor")
     graph.add_conditional_edges(
         "supervisor", lambda state: state["next"], {**{name: name for name in workers}, "synthesize": "synthesize"}
     )
-    graph.add_edge("synthesize", END)
+    graph.add_edge("synthesize", "save_history")
+    graph.add_edge("save_history", END)
     return graph.compile()

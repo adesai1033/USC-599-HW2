@@ -6,22 +6,30 @@ function newSessionId() {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function saveSessionId(id) {
+  try {
+    sessionStorage.setItem("session_id", id);
+  } catch {
+    // Private mode: the session lasts until the page is closed.
+  }
+  return id;
+}
+
 function loadSessionId() {
   try {
-    const id = sessionStorage.getItem("session_id") || newSessionId();
-    sessionStorage.setItem("session_id", id);
-    return id;
+    return saveSessionId(sessionStorage.getItem("session_id") || newSessionId());
   } catch {
     return newSessionId();
   }
 }
 
-const sessionId = loadSessionId();
+let sessionId = loadSessionId();
 
 const messagesEl = document.getElementById("messages");
 const form = document.getElementById("composer");
 const input = document.getElementById("input");
 const sendButton = document.getElementById("send");
+const newChatButton = document.getElementById("new-chat");
 
 let streaming = false;
 
@@ -367,6 +375,19 @@ class Turn {
     this.traceSummary.textContent = `Trace · ${this.events} events · ${formatMs(timings.total_ms)}`;
   }
 
+  // A turn stored by the server: its answer and citations, without the routing or trace (not stored).
+  static restore(stored) {
+    const turn = new Turn();
+    turn.root.classList.add("restored");
+    turn.route.hidden = true;
+    turn.trace.hidden = true;
+    turn.text = stored.answer;
+    turn.onCitations({ valid: stored.citations, invalid: [] });
+    const saved = new Date(stored.created_at);
+    turn.meta.textContent = `Restored from history · turn ${stored.n} · ${saved.toLocaleString()}`;
+    return turn;
+  }
+
   handle({ event, data }) {
     if (event === "routing") this.onRouting(data);
     else if (event === "trace") this.onTrace(data);
@@ -431,12 +452,34 @@ async function streamAnswer(message, turn) {
   if (!sawDone) throw new Error("The stream ended unexpectedly.");
 }
 
+function setBusy(busy) {
+  streaming = busy;
+  sendButton.disabled = busy;
+  newChatButton.disabled = busy;
+}
+
+// Show the session's earlier turns, e.g. after a reload or a new deploy.
+async function restoreConversation() {
+  setBusy(true);
+  try {
+    const response = await fetch(`/sessions/${encodeURIComponent(sessionId)}/turns`);
+    if (!response.ok) return;
+    for (const stored of await response.json()) {
+      addUserMessage(stored.question);
+      Turn.restore(stored);
+    }
+  } catch {
+    // History is a convenience here; the conversation still works without it.
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function send() {
   const message = input.value.trim();
   if (!message || streaming) return;
 
-  streaming = true;
-  sendButton.disabled = true;
+  setBusy(true);
   input.value = "";
   addUserMessage(message);
   const turn = new Turn();
@@ -446,11 +489,17 @@ async function send() {
   } catch (err) {
     turn.onError(err.message || "Something went wrong.");
   } finally {
-    streaming = false;
-    sendButton.disabled = false;
+    setBusy(false);
     input.focus();
   }
 }
+
+newChatButton.addEventListener("click", () => {
+  if (streaming) return;
+  sessionId = saveSessionId(newSessionId());
+  messagesEl.replaceChildren();
+  input.focus();
+});
 
 form.addEventListener("submit", (e) => {
   e.preventDefault();
@@ -463,3 +512,5 @@ input.addEventListener("keydown", (e) => {
     send();
   }
 });
+
+restoreConversation();

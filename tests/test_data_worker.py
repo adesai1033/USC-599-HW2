@@ -194,7 +194,7 @@ async def test_data_hands_ids_to_research_and_the_answer_cites_both():
         supervisor_llm=supervisor, synthesize_llm=answer_llm(answer),
     )
     final, traces = await run(graph, "Most-cited papers and what each proposes")
-    assert [t["node"] for t in traces if t["kind"] == "enter"] == ["supervisor", "data", "supervisor", "research", "supervisor", "synthesize"]
+    assert [t["node"] for t in traces if t["kind"] == "enter"] == ["load_history", "supervisor", "data", "supervisor", "research", "supervisor", "synthesize", "save_history"]
     assert supervisor.research_instruction == "Explain what each of these papers proposes: 2308.04079, 2201.05989"
     assert "2308.04079, 2201.05989" in research_model.seen[0][-1].text  # the research worker got the IDs
     report = final["answer_citations"]

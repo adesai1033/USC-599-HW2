@@ -32,13 +32,17 @@ class StubMCP:
 
 
 def serve(monkeypatch, graph=None, make=None) -> StubMCP:
-    """Make main.app's lifespan start `graph` (or run `make`) instead of the real MCP servers and graph."""
+    """Make main.app's lifespan start `graph` (or run `make`) instead of the real MCP servers and graph.
+
+    `graph` is a compiled graph, or a function from the app's history store to one, for tests that
+    need the graph and the /sessions endpoint to share a store.
+    """
     mcp = StubMCP()
 
-    async def make_runtime():
+    async def make_runtime(history):
         if make is not None:
             return await make()
-        return mcp, graph
+        return mcp, graph(history) if callable(graph) and not hasattr(graph, "astream") else graph
 
     monkeypatch.setattr(main, "make_runtime", make_runtime)
     return mcp

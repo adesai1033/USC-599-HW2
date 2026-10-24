@@ -63,6 +63,17 @@ body {
 
 .site-header { padding: 20px 0 8px; }
 .site-header h1 { margin: 0; font-size: 1.35rem; }
+.header-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+button.secondary {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.message.assistant.restored { border-style: dashed; }
 .subtitle { margin: 4px 0 0; color: var(--muted); font-size: 0.95rem; }
 
 .messages {

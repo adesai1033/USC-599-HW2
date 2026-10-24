@@ -17,6 +17,8 @@ def test_env(monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
         monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     monkeypatch.delenv("PORT", raising=False)
+    monkeypatch.setenv("STATE_BACKEND", "memory")  # tests never touch Firestore
+    monkeypatch.delenv("HISTORY_TURNS", raising=False)
     config.get_settings.cache_clear()
     llm.get_llm.cache_clear()
     yield

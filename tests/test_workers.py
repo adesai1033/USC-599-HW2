@@ -267,7 +267,7 @@ async def test_graph_runs_research_with_tool_traces_tagged_research():
     graph = build_graph(workers={"research": make_worker(RESEARCH, [search_corpus], model)},
                         supervisor_llm=supervisor, synthesize_llm=answer_llm())
     final, traces = await run(graph, "How does 3D Gaussian Splatting render a novel view?")
-    assert [t["node"] for t in traces if t["kind"] == "enter"] == ["supervisor", "research", "supervisor", "synthesize"]
+    assert [t["node"] for t in traces if t["kind"] == "enter"] == ["load_history", "supervisor", "research", "supervisor", "synthesize", "save_history"]
     tool_events = [t for t in traces if t["kind"] in ("tool_call", "tool_result")]
     assert [t["kind"] for t in tool_events] == ["tool_call", "tool_result"]
     assert all(t["agent"] == "research" and t["step"] == 1 for t in tool_events)

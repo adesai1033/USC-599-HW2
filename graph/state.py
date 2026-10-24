@@ -50,7 +50,7 @@ class AgentError(BaseModel):
     agent: str
     # supervisor: supervisor_parse_error, supervisor_error, step_limit, worker_unavailable, repeated_dispatch,
     #   retry_limit; worker guard: worker_timeout, transport, provider_error, worker_exception;
-    # worker: invalid_citation, attribution_mismatch; synthesize: synthesize_error
+    # worker: invalid_citation, attribution_mismatch; synthesize: synthesize_error; history: history_unavailable
     kind: str
     message: str
 
