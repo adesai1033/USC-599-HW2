@@ -83,6 +83,12 @@ def mcp_reconnect_backoff_s() -> float:
     return _env_number("MCP_RECONNECT_BACKOFF_S", 30, 0, float)
 
 
+def mcp_start_timeout_s() -> float:
+    """MCP_START_TIMEOUT_S (default 90): wait for an MCP server to start and list its tools. A Cloud Run
+    cold start on 1 vCPU takes the stdio servers about 25 s, and once more than 30 s."""
+    return _env_number("MCP_START_TIMEOUT_S", 90, 0.001, float)
+
+
 def history_turns() -> int:
     """HISTORY_TURNS (default 6): earlier turns of the session loaded into each new turn."""
     return _env_number("HISTORY_TURNS", 6, 0)

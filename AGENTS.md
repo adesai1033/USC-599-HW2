@@ -85,7 +85,8 @@ Server manifests live in `mcp_config.json`, whose path is passed via `MCP_SERVER
 Per-agent filtering of discovered tools happens in `mcp_client.py` using
 `agents/registry.py`.
 
-Each tool call has a `TOOL_TIMEOUT_S` limit (default 30); a timeout is a clean tool error. A
+A server that hasn't started and listed its tools within `MCP_START_TIMEOUT_S` (default 90) is marked
+unhealthy. Each tool call has a `TOOL_TIMEOUT_S` limit (default 30); a timeout is a clean tool error. A
 session that dies mid-call returns a clean tool error and marks the server unhealthy. Calls to
 an unhealthy server return its `description` immediately, and the description is added to the
 affected agents' prompts. `MCPTools.refresh()`, called at the start of each turn, tries one

@@ -48,10 +48,9 @@ from mcp.shared.exceptions import McpError
 from mcp.types import CallToolResult, TextContent
 
 from agents.registry import AGENTS
-from config import mcp_reconnect_backoff_s, tool_timeout_s
+from config import mcp_reconnect_backoff_s, mcp_start_timeout_s, tool_timeout_s
 
 ROOT = Path(__file__).resolve().parent
-START_TIMEOUT_S = 30.0
 MAX_RESULT_CHARS = 100_000  # longer tool output is cut before it reaches a model
 SECRET_ENV_VARS = ("TAVILY_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY")
 TAVILY_TOOLS = {"tavily_search", "tavily_extract"}
@@ -281,11 +280,12 @@ class MCPTools:
             return
         ready: asyncio.Future = asyncio.get_running_loop().create_future()
         self._tasks[name] = asyncio.create_task(self._serve(name, connection, ready), name=f"mcp:{name}")
+        timeout = mcp_start_timeout_s()
         try:
-            tools = await asyncio.wait_for(asyncio.shield(ready), START_TIMEOUT_S)
+            tools = await asyncio.wait_for(asyncio.shield(ready), timeout)
         except TimeoutError:
             self._tasks[name].cancel()
-            self._mark_down(name, f"did not start within {START_TIMEOUT_S:.0f} s")
+            self._mark_down(name, f"did not start within {timeout:.0f} s")
             return
         except Exception:  # the server failed to start; _serve has marked it down and logged why
             return

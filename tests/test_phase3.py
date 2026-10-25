@@ -396,7 +396,7 @@ def test_redact_covers_every_provider_key(monkeypatch):
 @pytest.mark.asyncio
 async def test_tavily_key_never_appears_in_log_output(monkeypatch):
     monkeypatch.setenv("TAVILY_API_KEY", SECRET)
-    monkeypatch.setattr(mcp_client, "START_TIMEOUT_S", 10.0)
+    monkeypatch.setenv("MCP_START_TIMEOUT_S", "10")
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     root = logging.getLogger()
