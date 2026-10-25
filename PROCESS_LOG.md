@@ -61,8 +61,19 @@ Dated record of each code change, newest first.
 - **Live, real Firestore (gcloud user token, session `phase7-live-check`):** append, load, the
   counter, citation round trip and session isolation all work.
 
-**Still open:** the deploy and the new-revision survival test. The deploy step needs to be run by
-hand.
+**Deployed and verified on Cloud Run (2026-10-24)**
+- Revision `paper-assistant-00002-r87`, session `survival-1024a`: "Most-cited 2024 papers and what
+  each proposes" streamed to `done` (78 s, 27 valid citations) and was saved as turn 1 in Firestore.
+- Revision `paper-assistant-00003-dwv` (a new deploy): `GET /sessions/survival-1024a/turns` returned
+  turn 1. `load_history` found "1 earlier turn", and "Summarize the second one" resolved to MASt3R
+  (arXiv:2406.09756). The answer has 10 valid MASt3R corpus citations, and it was saved as turn 2.
+  So history survives a new revision; it lives in Firestore, not in process memory.
+- The logs show `history backend: Firestore`, and no unredacted Tavily key.
+
+**Found while deploying (fix in Phase 8):** on 00002 the stdio MCP servers (`corpus`, later
+`papers_db`) "did not start within 30 s" on 1 vCPU. The answer fell back to the web and said corpus
+search was unavailable, as designed. On 00003 all three came up in 25 s. `START_TIMEOUT_S = 30`
+in `mcp_client.py` is too tight for a Cloud Run cold start.
 
 ### 2026-10-23 — Phase 6: the graph streams over SSE, and the frontend shows routing, trace and citations
 
