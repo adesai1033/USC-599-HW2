@@ -13,7 +13,10 @@ known metric (spelled as below, any case), higher_is_better must be 0 or 1 and m
 direction. Bad rows are rejected with a reason; good rows are written.
 
 Rows are upserted on (arxiv_id, benchmark, scene, metric, setting), so running the script twice
-changes nothing. build_db.py rebuilds the database from scratch, so run this again after it.
+changes nothing. A checked row also replaces every unverified row of the same paper, scene, metric and
+value, whatever its benchmark or setting: that is the same number extracted under a label the check
+corrected (e.g. "Tanks and Temples" for NSVF's masked-object subset). Run order after a rebuild:
+build_db.py -> extract_results.py -> seed_results.py.
 """
 
 import argparse
@@ -76,6 +79,9 @@ def validate_row(row: dict, known_ids: set[str]) -> tuple[dict | None, str | Non
 def upsert(conn: sqlite3.Connection, row: dict) -> str:
     """Insert or update one result on its natural key; return "inserted", "updated" or "unchanged"."""
     key = "arxiv_id = :arxiv_id AND benchmark = :benchmark AND scene IS :scene AND metric = :metric AND setting IS :setting"
+    # Extracted copies of this number under another label (see the module docstring).
+    conn.execute("DELETE FROM results WHERE arxiv_id = :arxiv_id AND scene IS :scene AND metric = :metric "
+                 "AND value = :value AND verified = 0", row)
     existing = conn.execute(f"SELECT value, higher_is_better, verified FROM results WHERE {key}", row).fetchall()
     if not existing:
         conn.execute(

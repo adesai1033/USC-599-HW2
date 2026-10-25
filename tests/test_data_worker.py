@@ -261,6 +261,33 @@ def test_seed_results_validates_upserts_and_is_idempotent(seed_db, tmp_path):
         assert conn.execute("SELECT COUNT(*), MAX(value) FROM results WHERE metric = 'PSNR' AND scene IS NULL").fetchone() == (1, 27.43)
 
 
-def test_shipped_seed_csv_is_header_only():
-    assert (ROOT / "ingest" / "results_seed.csv").read_text().strip() == (
-        "arxiv_id,benchmark,scene,metric,value,higher_is_better,setting,source_note")
+def test_a_checked_row_replaces_extracted_copies_under_another_label(seed_db, tmp_path):
+    sys.path.insert(0, str(ROOT / "ingest"))
+    import seed_results
+
+    with sqlite3.connect(seed_db) as conn:
+        conn.executemany("INSERT INTO results VALUES ('2308.04079', ?, NULL, 'PSNR', ?, 1, ?, 0)", [
+            ("Tanks and Temples", 28.56, "Ours, 30k"),   # mislabeled benchmark
+            ("Tanks and Temples", 28.56, None),          # the same number repeated in another table
+            ("Tanks and Temples", 23.14, None),          # a different result: kept
+        ])
+    csv_path = write_csv(tmp_path / "seed.csv", [
+        ["2308.04079", "Tanks and Temples (NSVF masked objects)", "", "PSNR", "28.56", "1", "Ours, 30k", "Tab. 1"]])
+    assert seed_results.seed(csv_path, seed_db)[0]["inserted"] == 1
+    with sqlite3.connect(seed_db) as conn:
+        rows = conn.execute("SELECT benchmark, value, verified FROM results ORDER BY value").fetchall()
+    assert rows == [("Tanks and Temples", 23.14, 0), ("Tanks and Temples (NSVF masked objects)", 28.56, 1)]
+
+
+def test_shipped_seed_csv_is_complete_and_valid(seed_db):
+    sys.path.insert(0, str(ROOT / "ingest"))
+    import seed_results
+
+    path = ROOT / "ingest" / "results_seed.csv"
+    with path.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert 50 <= len(rows) <= 100 and all(r["source_note"].strip() for r in rows)
+    with sqlite3.connect(seed_db) as conn:
+        conn.executemany("INSERT OR IGNORE INTO papers VALUES (?, 'x', 2024, 'v', 0, 'cs.CV', 'u')", {(r["arxiv_id"],) for r in rows})
+    counts, rejections = seed_results.seed(path, seed_db)
+    assert rejections == [] and counts["inserted"] == len(rows)  # no two rows share a key
