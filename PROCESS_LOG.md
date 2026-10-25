@@ -75,6 +75,10 @@ Dated record of each code change, newest first.
 search was unavailable, as designed. On 00003 all three came up in 25 s. `START_TIMEOUT_S = 30`
 in `mcp_client.py` is too tight for a Cloud Run cold start.
 
+- **Pushed:** `c15a2da`, `aeea62b` and `a6fec89` to `origin/main` (2026-10-24).
+- **Left in Firestore:** test sessions `phase7-live-check` and `survival-1024a`, kept as evidence of
+  the survival test.
+
 ### 2026-10-23 — Phase 6: the graph streams over SSE, and the frontend shows routing, trace and citations
 
 **Backend**
