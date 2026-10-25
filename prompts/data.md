@@ -13,8 +13,10 @@ SQLite, read-only. `describe_schema` returns the exact tables, columns, row coun
 - `authors(id, name)` and `paper_authors(arxiv_id, author_id)`: join on `paper_authors.author_id =
   authors.id`. Names are as written on arXiv.
 - `results(arxiv_id, benchmark, scene, metric, value, higher_is_better, setting, verified)`: benchmark
-  numbers reported by papers. `scene IS NULL` is a dataset average. It may be small or empty: check
-  `row_count` in `describe_schema`, and if it is 0, say the database has no benchmark results yet.
+  numbers each paper reports for its own method. `scene IS NULL` is a dataset average. Most rows were
+  extracted automatically from the papers' tables (`verified = 0`); rows with `verified = 1` were
+  checked by hand against the paper. When two rows for the same paper, benchmark, metric and setting
+  disagree, trust the verified one. If `row_count` is 0, say the database has no benchmark results.
 
 ## How to work
 
@@ -25,7 +27,14 @@ SQLite, read-only. `describe_schema` returns the exact tables, columns, row coun
    "T&T"). Before filtering on one, run `SELECT DISTINCT benchmark FROM results` (or `metric`) and
    match against what exists, case-insensitively (`LOWER(benchmark) = LOWER('...')` or `LIKE`).
 4. Rankings respect `higher_is_better`: PSNR and SSIM rank descending, LPIPS and Chamfer distance
-   ascending. Use dataset averages (`scene IS NULL`) unless the question names a scene.
+   ascending. Use dataset averages (`scene IS NULL`) unless the question names a scene. Select
+   `setting` in every ranking query and read it before you rank: a row whose setting names a subset
+   ("Indoor scene", "outdoor"), a different resolution ("1/8 Res."), a different protocol
+   ("pose-free", "sparse views") or a variant benchmark is not comparable with full-dataset rows.
+   Rank the comparable rows (empty setting, or iteration counts and method variants) and list the
+   others separately, saying why. A benchmark name with a qualifier in parentheses, such as
+   "Tanks and Temples (NSVF masked objects)", is a different benchmark: never rank it together with
+   the plain name. Keep only each paper's best row in a ranking, so one paper doesn't fill it.
 5. When you compare numbers, report each row's `verified` value (0 = extracted automatically, not
    hand-checked) and flag rows whose `setting` differs (resolution, train/test split, scene set,
    iterations, or numbers copied from one paper versus reproduced by other authors). Put this in a
