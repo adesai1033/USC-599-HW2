@@ -14,6 +14,91 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-24 to 2026-10-26: Phase 8, benchmark results, full deploy, probes and unrehearsed questions
+
+**Built**
+- **`MCP_START_TIMEOUT_S`** (default 90) replaces the hard-coded 30 s start limit in `mcp_client.py`.
+  On the new revision's cold start the stdio servers took about 30 s, so the old limit would have
+  failed again.
+- **`ingest/extract_results.py`** (it was a stub):
+  - It reads the raw PDFs, because `parse_pdfs.py` drops table bodies as equation fragments: only 13
+    of 4,741 chunks held a table of numbers.
+  - It picks pages that have a table caption and a metric name: 728 pages from 198 papers, at most 6
+    per paper.
+  - Each page goes to the fast tier as a 150-dpi image (which keeps the table layout) plus its text
+    (which keeps the digits exact). The model returns a structured list of the paper's own results,
+    using `prompts/extract_results.md`.
+  - It normalizes benchmark and metric names, and takes `higher_is_better` from `KNOWN_METRICS`, never
+    from the model.
+  - Each page's reply is cached in `data/extracted_raw/`, so changing the normalization costs nothing
+    to re-run.
+  - Two clean-up rules. A number repeated in another table with its setting is kept once. In a table
+    that also reports Synthetic-NSVF, "Tanks and Temples" becomes "Tanks and Temples (NSVF masked
+    objects)", because DVGO, KiloNeRF and TensoRF use NSVF's masked-object subset, not the real-scene
+    benchmark.
+- **`seed_results.py`:** a hand-checked row now also removes unverified copies of the same paper,
+  scene, metric and value under another label, so relabeling a benchmark or setting during
+  verification removes the mislabeled copy.
+- **`prompts/data.md`:**
+  - Rows with `verified = 1` are trusted over extracted ones.
+  - Rankings select `setting` and keep subsets, other resolutions and other protocols apart.
+  - Qualified benchmark names count as different benchmarks.
+  - Each paper appears once in a ranking.
+
+**Extraction and verification**
+- **Cost:** the real run cost $3.92 (2.26M input and 0.59M output tokens on gemini-3.8-flash). An
+  earlier full run cost $3.95 and saved nothing: an edit of mine put a comment where the
+  `higher_is_better` field belonged, and validation dropped all 10,773 rows. That is why replies are
+  now cached and the tests exercise `to_row`. Total Phase 8 extraction spend was about $8.
+- **Rows:** 9,903 unverified rows from 190 papers, plus **99 hand-checked rows** in
+  `ingest/results_seed.csv`. I checked each against the rendered table page, covering:
+  - 3DGS Table 1 (36 rows)
+  - Zip-NeRF, Mip-NeRF 360, Scaffold-GS, Mip-Splatting
+  - 2DGS (DTU Chamfer, T&T F-score)
+  - NeuS (DTU Chamfer)
+  - the NSVF-protocol T&T rows of DVGO, PlenOctrees, KiloNeRF and TensoRF
+  - CF-3DGS's pose-free T&T
+- **Accuracy:** every checked value matched the paper. The errors were in labels, not digits:
+  - Four papers' T&T is NSVF's masked-object subset. They now carry their own benchmark name.
+  - CF-3DGS uses a pose-free protocol on 8 scenes. Its setting now says so.
+  - Mip-Splatting's Table 3 settings lack "trained at 1×, tested at 1–8×". These rows are left
+    unverified.
+  - Zip-NeRF's multiscale Table 1 was not extracted at all.
+
+**Deployed (revision `paper-assistant-00004-nxk`) and tested**
+- **Cold start**, after the service had been at zero instances for days:
+  - The first request (`GET /sessions/.../turns`) took 28.9 s, about 26 s of it container start and
+    imports.
+  - The MCP servers were all up 30 s after app start.
+  - The first chat request waited for them and finished in 83.8 s (a summary over 10 papers, 26 valid
+    citations). Nothing failed.
+- **Probes** on a no-traffic tagged revision (`00005-bed`) with `ANTHROPIC_API_KEY` and
+  `TAVILY_API_KEY` invalid and `CHROMA_PERSIST_DIR=/nonexistent`:
+  - (a) A T&T ranking routed synthesize to the strong tier, failed, and fell back to OpenAI
+    (`fallback=True` in the routing event).
+  - (b) "Papers this month" said web search was unavailable.
+  - (c) A Plenoxels question said the corpus was unavailable, while the data tools kept working.
+  - All three returned HTTP 200 and ended with `done`. The tag was removed afterwards.
+- **20 unrehearsed questions:**
+  - Coverage: 6 corpus, 4 benchmark, 2 metadata, 2 current events, a 3-turn follow-up chain, a vague
+    question, an out-of-scope one and a prompt injection.
+  - All returned 200 and `done`. The routing matched the question type: strong tier for compares and
+    multi-paper answers.
+  - In the chain, "those" and "its" resolved to DNGaussian.
+  - The injection was refused with no tool calls.
+  - One client connection dropped mid-stream (this machine slept). The server finished that turn and
+    saved it.
+- **Logs:** no unredacted `tavilyApiKey=`. The serving revision has no warnings or tracebacks.
+
+**Known issues found:**
+- In the follow-up chain, synthesize cited a chunk ID taken from the earlier answer. It was flagged as
+  unverified, as designed.
+- One T&T answer put CF-3DGS (pose-free) at the top of a table headed "standard poses".
+- The nuScenes question (out of scope) was answered from the web without saying it is outside the
+  corpus.
+- Cross-paper comparability remains the main data limitation. For example, GSDF's T&T 27.37 is real
+  but uses its own scene selection, where its re-run of 3DGS scores 26.73, not 23.14.
+
 ### 2026-10-23 — Phase 7: durable session history (`c15a2da`)
 
 **Built**
