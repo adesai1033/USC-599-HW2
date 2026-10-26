@@ -14,6 +14,13 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-26: `docs/cost_analysis.md` brought up to date
+
+- The template-era file listed OpenAI as the supervisor and data provider and offered NVIDIA NIM,
+  neither of which matches the code. It now gives the current role-to-model table with prices
+  checked 2026-10-26, the measured per-query costs, and the one-time ingestion and eval costs, and
+  points to `docs/evaluation.md` for the full tables.
+
 ### 2026-10-26: Phase 10, documentation
 
 - **`docs/architecture.md`** (it was empty):

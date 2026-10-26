@@ -1,42 +1,34 @@
 # Cost Analysis
 
-Commercial model prices, free tiers, and student quotas change frequently. This file therefore defines the **measurement method** instead of hard-coding an evergreen dollar total.
+The measured cost per query, the pricing sources and the provider comparison are in
+[`evaluation.md`](evaluation.md#cost-per-query). This page is the short version. Prices were checked
+on 2026-10-26.
 
-## Reference routing configuration
+## Who pays for what
 
-| Role | Provider | Current reference model |
-|---|---|---|
-| Supervisor | OpenAI | `gpt-6-sol` |
-| Research | Anthropic | `claude-sonnet-5` |
-| Summary | Google | `gemini-3.8-flash` |
-| Data | OpenAI | `gpt-6-sol` |
-| RAGAS judge | OpenAI | `gpt-6-sol` |
-| Embedding | OpenAI | `text-embedding-3-small` |
+| Role | Provider | Model | Input / output, per 1M tokens |
+|---|---|---|---|
+| Supervisor, data, research (default), synthesize (default) | Google | `gemini-3.8-flash` | $0.75 / $3.75 |
+| Summary, research on compares and lit reviews, large syntheses | Anthropic | `claude-sonnet-5-5` | $2.00 / $10.00 |
+| Fallback | each tier falls back to the other | | |
+| Embeddings (query and ingestion) | OpenAI | `text-embedding-3-small` | $0.02 |
+| RAGAS judge (eval only) | OpenAI | `gpt-6.1-sol` | $2.00 / $10.00 |
 
-NVIDIA NIM may replace one or more roles while at least one other provider remains active. Current example: `nvidia/nemotron-3-ultra-550b-a55b`.
+OpenAI is not a chat provider. The routing rules are in [`architecture.md`](architecture.md).
 
-## What to record for a verification pass
+## Measured (2026-10-26, 29-question baseline, normal routing)
 
-For each query or evaluation batch, record:
+- **Mean $0.079 per query** (median $0.040): Gemini $0.0225, Claude $0.0555, Cloud Run about $0.001.
+- **By type:** lookup $0.044, compare $0.153, lit review $0.324, metadata $0.023.
+- **Forced to one provider** (9 questions): Gemini $0.044, Claude $0.173 per query.
+- **Tavily:** one credit per search or extract.
+- **Firestore:** up to `HISTORY_TURNS` (6) document reads and one write per turn, negligible at
+  coursework scale.
 
-1. provider and exact model ID;
-2. input/output tokens when the SDK exposes them;
-3. current provider price used for the estimate;
-4. embedding tokens/cost for corpus ingestion;
-5. Tavily usage under the currently available student/free plan;
-6. Cloud Run compute estimate;
-7. persistence cost when material.
+## One-time and evaluation costs
 
-## Why there is no NVIDIA-only "free path"
+- **Ingestion:** embeddings $0.043; benchmark-result extraction $3.92 on Gemini Flash.
+- **Evaluation:** about $6 per full pass (answering plus judging 25 questions); the judge alone is
+  about $4.
 
-The old implementation allowed `LLM_BACKEND=nvidia` to route every role to a single provider. That no longer exists because Assignment 2 requires routing across at least two different providers.
-
-A low-cost configuration may pair NVIDIA with another provider, for example Research on NVIDIA and Summary on Gemini, provided both are genuinely exercised.
-
-## Persistence
-
-The canonical reference uses Firestore. GCS/GCSFuse and Cloud SQL are valid alternatives. For coursework-scale verification, persistence charges are normally small, but current pricing should be checked rather than assumed.
-
-## Release-time action
-
-Before publishing a dollar estimate, re-check each provider's official pricing page and date-stamp the estimate in this file.
+Re-check each provider's pricing page before quoting these figures later.
