@@ -456,7 +456,10 @@ Do not violate them to "make tests pass."
   The Firestore client uses ADC; no key file in the image.
 - **Images go to Artifact Registry**, not `gcr.io` as in the assignment's sample commands.
 - **Cold start:** `min-instances=0` means the first request pays for container start,
-  MCP server spawn, and Chroma load. `/health` must not block on those.
+  MCP server spawn, and Chroma load. Startup (the FastAPI lifespan) waits for the MCP servers, bounded by
+  `MCP_START_TIMEOUT_S`, before the port opens: Cloud Run gives full CPU only until then (and during
+  requests), so servers spawned in the background on an instance with no request yet got almost no CPU
+  and missed their limit. A server that fails to start is recorded and the app still serves.
 
 ## Verification
 

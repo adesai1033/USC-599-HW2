@@ -1,7 +1,10 @@
 """FastAPI app: GET / (static), POST /chat/stream (SSE), GET /health; reads PORT; lifespan init.
 
-The MCP sessions and the compiled graph start in a background task, so /health answers during a cold
-start while the servers spawn and the Chroma index loads. /chat/stream waits for that task.
+Startup waits for the MCP sessions and the compiled graph before the port opens (bounded: each server
+gets MCP_START_TIMEOUT_S, and a server that fails is recorded, not raised). Cloud Run gives an instance
+full CPU until its port opens, but almost none between requests after that, so servers started in the
+background on an instance that wasn't serving a request yet missed their limit. A runtime that failed
+to start is reported by /chat/stream as an error event.
 GET /sessions/{session_id}/turns returns a session's stored turns, so the UI can restore a conversation.
 """
 
@@ -55,6 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("starting with %r", settings)
     app.state.history = make_history()
     app.state.runtime = asyncio.create_task(make_runtime(app.state.history))
+    await asyncio.wait({app.state.runtime})  # doesn't raise: a failure is reported per request
     try:
         yield
     finally:

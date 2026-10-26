@@ -37,17 +37,21 @@ def post_chat(monkeypatch, synthesize_llm):
         return client.post("/chat/stream", json={"session_id": "s1", "message": "What is NeRF?"})
 
 
-def test_health_does_not_wait_for_the_runtime(monkeypatch):
-    started = asyncio.Event()
+def test_startup_waits_for_the_runtime_before_serving(monkeypatch):
+    # Cloud Run gives an instance full CPU only until its port opens, so the MCP servers start first.
+    started = []
 
     async def slow_start():
-        await started.wait()  # never set: the MCP servers are still spawning
+        await asyncio.sleep(0.2)
+        started.append(True)
+        raise RuntimeError("no servers")  # a failed startup is still served, as an error event
 
     serve(monkeypatch, make=slow_start)
     with TestClient(main.app) as client:
-        response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+        assert started == [True]
+        assert client.get("/health").json() == {"status": "ok"}
+        events = parse_sse(client.post("/chat/stream", json={"session_id": "s1", "message": "hi"}).text)
+    assert [name for name, _ in events] == ["error", "done"]
 
 
 def test_stream_emits_tokens_and_one_done(monkeypatch):

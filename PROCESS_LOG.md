@@ -14,6 +14,22 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-26: Startup waits for the MCP servers before the port opens
+
+- **Symptom (`00008-85k`):** after the handshake fix, the rollout instance was fine, but an
+  autoscaled second instance lost both stdio servers ("did not start within 90 s"). That includes
+  papers_db, which starts in about 1 s.
+- **Likely cause:** Cloud Run allocates CPU only until the port opens and during requests. The app
+  opened its port at once and spawned the servers in the background. So on an instance that had no
+  request yet, the servers ran with almost no CPU.
+- **Fix:** `main.lifespan` awaits the runtime task before it yields, so uvicorn listens only once the
+  servers are up or have hit `MCP_START_TIMEOUT_S`. The wait doesn't raise: a failed start is still
+  served as an `error` event and then `done`. Cloud Run's default TCP startup probe allows 240 s.
+- **Docs and tests:** AGENTS.md's cold-start note is updated. The "health doesn't wait" test is
+  replaced by one that checks startup waits and that a failed start is still served. 188 passed,
+  2 skipped.
+- **Locally:** the log order is MCP servers up, then startup complete, then uvicorn listening.
+
 ### 2026-10-26: Cold-start corpus failure found and fixed (stdio handshake timeout)
 
 - **Diagnosis:** `00007-xzq` shipped the `describe_error` logging, and the next cold start named the
