@@ -14,6 +14,64 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-26: Phase 9 (in progress), RAGAS, latency, cost, providers
+
+**Built**
+- **`eval/run_ragas.py`:**
+  - The `answer` step runs each question through the real graph and MCP servers via
+    `streaming.graph_frames`. A new `final_state=` seam exposes the retrieved chunk IDs; their texts
+    come from the real `get_chunks` tool.
+  - The `score` step uses RAGAS 0.4.3 (`metrics.collections`): faithfulness, answer_relevancy,
+    context_precision_with_reference and context_recall. The judge is gpt-6.1-sol at medium reasoning.
+  - RAGAS 0.4.3 needs openai<2 and langchain-community<0.4, which conflict with the app's pins, so it
+    runs in its own `.venv-eval` (`eval/requirements-ragas.txt`).
+  - RAGAS 0.4.3 misses `gpt-6.1-sol` when it decides whether to send `max_completion_tokens`, because
+    it parses an integer after `gpt-`. A small client shim fixes that.
+  - `--provider` sends every call to one provider, for the provider comparison.
+- **`eval/latency.py`:** stage times from when SSE events arrive at the client (start, history,
+  route, worker, route2, first token, TTFT, total), against the deployed URL.
+- **`eval/cost.py`:** cost per query from the done event's token usage, at prices checked
+  2026-10-26.
+- **`.gitignore`:** answer files (with full chunk texts) stay out of git. Scores, summaries and
+  latency runs are committed.
+
+**Baseline RAGAS (25 corpus questions):** faithfulness 0.930, answer relevancy **0.823** (the worst),
+context precision 0.854, context recall 0.881. The answers were on topic, but they opened with
+headings and carried details nobody asked for.
+
+**Fix (one iteration):** `prompts/synthesize.md` gained a "Shape" section. Open with a one- or
+two-sentence direct answer in the question's terms (both parts of a two-part question), and drop
+details the question didn't ask for. Result on the 22 questions scored in both runs:
+
+| Metric | Baseline | After fix | Questions up / down |
+|---|---|---|---|
+| Answer relevancy | 0.823 | 0.845 | 10 / 5 |
+| Faithfulness | 0.931 | 0.916 | 7 / 9 |
+| Context precision | 0.889 | 0.880 | 6 / 8 |
+| Context recall | 0.886 | 0.938 | 5 / 1 |
+
+Recall moved by 0.05 although the prompt can't change retrieval, so run-to-run noise is about as
+large as the gain.
+
+**Latency (deployed, `00004-nxk`):**
+- **Cold:** TTFT 66.3 s and total 72.1 s. 48.2 s of that passed before the graph started (container
+  start plus waiting for the MCP servers).
+- **Warm, median TTFT:** lookup 16.3 s, compare 35.8 s, data 26.9 s, current events 26.0 s,
+  no-tool 4.1 s.
+- The worker stage dominates. Each supervisor decision takes about 2.4 s, and synthesize reaches
+  its first token in about 1 s.
+
+**Cost per query (baseline, routed):**
+- **Overall:** mean $0.079, median $0.040.
+- **By type:** lookup $0.044, compare $0.153, lit review $0.32, metadata $0.023.
+- **Providers:** Claude (the strong tier) is 70% of the spend.
+- **Forced to one provider** (9 questions): Gemini $0.044 per query, faithfulness 0.944, relevancy
+  0.810. Claude $0.173 per query, faithfulness 0.956, relevancy 0.827.
+
+**Blocked:** OpenAI credits ran out during the run (429 `insufficient_quota`). That stopped the
+judge (iteration scores for q23–q25 are partial) and the forced-OpenAI provider run. Because query
+embeddings use OpenAI, it also breaks corpus search locally and on Cloud Run until credits are added.
+
 ### 2026-10-24 to 2026-10-26: Phase 8, benchmark results, full deploy, probes and unrehearsed questions
 
 **Built**
