@@ -14,7 +14,7 @@
 
 Dated record of each code change, newest first.
 
-### 2026-10-26: Phase 9 (in progress), RAGAS, latency, cost, providers
+### 2026-10-26: Phase 9, RAGAS, latency, cost, providers
 
 **Built**
 - **`eval/run_ragas.py`:**
@@ -41,17 +41,20 @@ headings and carried details nobody asked for.
 
 **Fix (one iteration):** `prompts/synthesize.md` gained a "Shape" section. Open with a one- or
 two-sentence direct answer in the question's terms (both parts of a two-part question), and drop
-details the question didn't ask for. Result on the 22 questions scored in both runs:
+details the question didn't ask for. Result on all 25 questions:
 
-| Metric | Baseline | After fix | Questions up / down |
-|---|---|---|---|
-| Answer relevancy | 0.823 | 0.845 | 10 / 5 |
-| Faithfulness | 0.931 | 0.916 | 7 / 9 |
-| Context precision | 0.889 | 0.880 | 6 / 8 |
-| Context recall | 0.886 | 0.938 | 5 / 1 |
+| Metric | Baseline | After fix |
+|---|---|---|
+| Answer relevancy | 0.823 | 0.833 |
+| Faithfulness | 0.930 | 0.918 |
+| Context precision | 0.854 | 0.840 |
+| Context recall | 0.881 | 0.919 |
 
-Recall moved by 0.05 although the prompt can't change retrieval, so run-to-run noise is about as
-large as the gain.
+Recall moved by 0.04 although the prompt can't change retrieval, so the 0.01 relevancy gain is
+within run-to-run noise. The prompt is kept: it doesn't hurt, and the answers read better. The weakest
+spot is now the two lit-review questions (q24, q25): relevancy 0.61 and 0.75, context precision 0.45
+and 0.35. Retrieval for multi-paper questions is the next thing to fix, beyond this phase's one
+iteration.
 
 **Latency (deployed, `00004-nxk`):**
 - **Cold:** TTFT 66.3 s and total 72.1 s. 48.2 s of that passed before the graph started (container
@@ -68,9 +71,16 @@ large as the gain.
 - **Forced to one provider** (9 questions): Gemini $0.044 per query, faithfulness 0.944, relevancy
   0.810. Claude $0.173 per query, faithfulness 0.956, relevancy 0.827.
 
-**Blocked:** OpenAI credits ran out during the run (429 `insufficient_quota`). That stopped the
-judge (iteration scores for q23–q25 are partial) and the forced-OpenAI provider run. Because query
-embeddings use OpenAI, it also breaks corpus search locally and on Cloud Run until credits are added.
+- **Forced to OpenAI (gpt-6.1-sol):** $0.100 per query. Every compare and lit-review question hit
+  the 60 s worker timeout (q20 lost both workers and returned no citations); median total 45 s,
+  against 35 s for Gemini and 30 s for Claude.
+- **Same 7 scored questions, all three providers** (faithfulness / relevancy / precision / recall):
+  Gemini 0.941 / 0.795 / 0.803 / 0.833; Claude 0.964 / 0.820 / 0.784 / 0.917; OpenAI 0.992 / 0.840 /
+  0.908 / 0.888. The judge is also gpt-6.1-sol, so OpenAI's lead may be partly the judge favoring its
+  own model's wording, and those scores skip q20, which failed.
+
+OpenAI credits ran out mid-phase (429 `insufficient_quota`) and were topped up the same day. Only the
+three unfinished iteration questions were re-scored, then merged into `iter1.scores.jsonl`.
 
 ### 2026-10-24 to 2026-10-26: Phase 8, benchmark results, full deploy, probes and unrehearsed questions
 
