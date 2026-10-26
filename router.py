@@ -11,8 +11,8 @@ in scope, findings, context size), so every decision can be logged, streamed and
   synthesize  fast     >= 2 findings, >= 3 distinct papers cited, or context > STRONG_CONTEXT_TOKENS  hybrid
 
 invoke_with_fallback() runs a call on the routed tier and, on a provider error (or no reply within an
-optional timeout), retries it once on the fallback tier, returning a second decision with
-fallback=True and the original error's class.
+optional timeout), retries it once on the other tier (llm.FALLBACK: Gemini and Claude back each other
+up), returning a second decision with fallback=True and the original error's class.
 """
 
 import asyncio
@@ -27,7 +27,7 @@ from langchain_core.messages import AnyMessage, ToolMessage
 from config import strong_context_tokens
 from graph.guard import is_provider_error
 from graph.state import Finding, RoutingDecision
-from llm import PROVIDERS, Tier, model_id
+from llm import FALLBACK, PROVIDERS, Tier, model_id
 
 logger = logging.getLogger("router")
 
@@ -109,12 +109,13 @@ def route(call_site: CallSite, features: RouteFeatures) -> RoutingDecision:
 
 
 def fallback_decision(decision: RoutingDecision, error: BaseException, timeout: float | None = None) -> RoutingDecision:
-    """The decision recorded when a call moves to the fallback tier after a provider error or a timeout."""
+    """The decision recorded when a call moves to the other tier after a provider error or a timeout."""
     cause = (f"no reply within {timeout:g} s" if isinstance(error, TimeoutError) and timeout is not None
              else type(error).__name__)
+    tier = FALLBACK[decision.tier]
     return decision.model_copy(update={
-        "provider": PROVIDERS["fallback"], "model": model_id("fallback"), "tier": "fallback", "fallback": True,
-        "reason": f"{cause} from {decision.provider} ({decision.tier} tier): retried on the fallback tier",
+        "provider": PROVIDERS[tier], "model": model_id(tier), "tier": tier, "fallback": True,
+        "reason": f"{cause} from {decision.provider} ({decision.tier} tier): retried on {PROVIDERS[tier]} ({tier} tier)",
     })
 
 
@@ -131,13 +132,13 @@ async def invoke_with_fallback(
     fallback call itself has no such limit. on_fallback(decision) runs before the fallback call, so the
     switch is recorded even if the fallback fails too. Only provider errors and that timeout fall back:
     tool errors, bugs and cancellation propagate unchanged, and so does a failure of the fallback itself.
-    A call already routed to the fallback tier isn't retried.
+    A call that is itself a fallback isn't retried.
     """
     try:
         return await (asyncio.wait_for(primary(), timeout) if timeout is not None else primary()), []
     except Exception as exc:
         timed_out = timeout is not None and isinstance(exc, TimeoutError)
-        if decision.tier == "fallback" or not (timed_out or is_provider_error(exc)):
+        if decision.fallback or not (timed_out or is_provider_error(exc)):
             raise
         switched = fallback_decision(decision, exc, timeout)
         logger.warning("%s: %s: %s", decision.call_site, switched.reason, str(exc)[:500])

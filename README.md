@@ -72,15 +72,16 @@ Model IDs verified against the provider docs on 2026-10-21:
 |---|---|---|
 | `GEMINI_MODEL` | `gemini-3.8-flash` | https://ai.google.dev/gemini-api/docs/models |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | https://platform.claude.com/docs/en/about-claude/models/overview |
-| `OPENAI_MODEL` | `gpt-6.1-sol` | https://developers.openai.com/api/docs/models |
 | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | https://developers.openai.com/api/docs/models |
 
 Tiers (`llm.py`): **fast** = Gemini (`GEMINI_MODEL`), **strong** = Claude (`ANTHROPIC_MODEL`, thinking limited to the gaps between tool
-calls with `thinking={"type": "between_tools"}`; Sonnet 5.5 rejects `disabled`), **fallback** = OpenAI (`OPENAI_MODEL`). On 2026-10-22 I re-checked the OpenAI page:
-`gpt-6.1-sol` takes `reasoning_effort` low/medium/high/xhigh/max (no `none` or `minimal`); the
-fallback tier uses `low` where the caller asks for low thinking. A one-line call to each of
-`claude-sonnet-5-5` and `gpt-6.1-sol` succeeded the same day. `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
-are optional at startup: a missing key fails that provider's calls, which then fall back.
+calls with `thinking={"type": "between_tools"}`; Sonnet 5.5 rejects `disabled`). Each tier is the other's
+fallback: a provider error (or a stalled supervisor call) on Gemini retries once on Claude, and vice versa.
+OpenAI is used only for embeddings (`OPENAI_EMBEDDING_MODEL`, needed for corpus search) and as the RAGAS
+judge in `eval/`; it was a third chat tier until Phase 9, when the forced-OpenAI run hit worker timeouts
+on every multi-paper question and its credits running out showed that a fallback on the embedding
+provider fails together with corpus search. `ANTHROPIC_API_KEY` is optional at startup: a missing key
+fails Claude's calls, which then fall back to Gemini.
 `router.py` picks the tier per call; `STRONG_CONTEXT_TOKENS` (default 8000) is the synthesize context
 size above which it uses the strong tier.
 

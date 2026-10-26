@@ -129,7 +129,7 @@ button.secondary {
 .route-site { font-weight: 600; }
 .tier-fast { color: var(--fast); background: var(--fast-bg); }
 .tier-strong { color: var(--strong); background: var(--strong-bg); }
-.tier-fallback, .route-model.fallback { color: var(--fallback); background: var(--fallback-bg); }
+.route-model.fallback { color: var(--fallback); background: var(--fallback-bg); }
 .route-why { margin-top: 6px; color: var(--muted); }
 .route-why summary { cursor: pointer; width: fit-content; }
 .route-why ul { margin: 4px 0 0; padding-left: 18px; }

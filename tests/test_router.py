@@ -7,7 +7,6 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.exceptions import ModelError
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import ChatOpenAI
 
 import router
 from graph.guard import classify, is_provider_error
@@ -20,20 +19,16 @@ def test_each_tier_is_its_own_provider():
     assert isinstance(get_llm("fast"), ChatGoogleGenerativeAI)
     assert isinstance(get_llm("strong"), ChatAnthropic)
     assert get_llm("strong").thinking == {"type": "between_tools"}  # less thinking, for latency
-    assert isinstance(get_llm("fallback", thinking_level="low"), ChatOpenAI)
-    assert get_llm("fallback", thinking_level="low").reasoning_effort == "low"
-    assert [model_id(t) for t in ("fast", "strong", "fallback")] == [
-        "test-gemini-model", "test-anthropic-model", "test-openai-model"]
+    assert [model_id(t) for t in ("fast", "strong")] == ["test-gemini-model", "test-anthropic-model"]
     with pytest.raises(ValueError):
-        get_llm("huge")
+        get_llm("fallback")  # OpenAI is not a chat provider; each tier falls back to the other
 
 
 def test_model_ids_default_to_env_example_values(monkeypatch):
     import config
     monkeypatch.delenv("ANTHROPIC_MODEL")
-    monkeypatch.delenv("OPENAI_MODEL")
     config.get_settings.cache_clear()
-    assert (model_id("strong"), model_id("fallback")) == (config.DEFAULT_ANTHROPIC_MODEL, config.DEFAULT_OPENAI_MODEL)
+    assert model_id("strong") == config.DEFAULT_ANTHROPIC_MODEL
     assert "key" not in repr(config.get_settings()).replace("api keys=<redacted>", "")
 
 
@@ -129,13 +124,21 @@ async def test_no_fallback_when_the_primary_succeeds():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error", [AuthenticationError("invalid x-api-key"), ModelError("429")])
-async def test_provider_error_falls_back_once_and_is_recorded(error):
+async def test_provider_error_falls_back_once_to_the_other_provider_and_is_recorded(error):
     log, primary, fallback = calls(primary_error=error)
     result, [switched] = await invoke_with_fallback(route("summary", RouteFeatures()), primary, fallback)
     assert result == "fallback answer" and log == ["primary", "fallback"]
     assert (switched.call_site, switched.tier, switched.provider, switched.model, switched.fallback) == (
-        "summary", "fallback", "openai", "test-openai-model", True)
+        "summary", "fast", "google", "test-gemini-model", True)
     assert type(error).__name__ in switched.reason and "anthropic" in switched.reason
+
+
+@pytest.mark.asyncio
+async def test_a_failing_fast_call_falls_back_to_the_strong_provider():
+    _, primary, fallback = calls(primary_error=ModelError("429"))
+    _, [switched] = await invoke_with_fallback(route("research", RouteFeatures()), primary, fallback)
+    assert (switched.tier, switched.provider, switched.model) == ("strong", "anthropic", "test-anthropic-model")
+    assert "from google (fast tier): retried on anthropic (strong tier)" in switched.reason
 
 
 @pytest.mark.asyncio
@@ -163,15 +166,15 @@ async def test_non_provider_errors_do_not_fall_back(error):
 
 @pytest.mark.asyncio
 async def test_a_failing_fallback_propagates_as_a_provider_error():
-    _, primary, fallback = calls(primary_error=AuthenticationError("anthropic"), fallback_error=ModelError("openai down"))
+    _, primary, fallback = calls(primary_error=AuthenticationError("anthropic"), fallback_error=ModelError("google down"))
     with pytest.raises(ModelError) as raised:
         await invoke_with_fallback(route("synthesize", RouteFeatures()), primary, fallback)
     assert classify(raised.value) == "provider_error"
 
 
 @pytest.mark.asyncio
-async def test_a_call_already_on_the_fallback_tier_is_not_retried():
-    decision = route("research", RouteFeatures()).model_copy(update={"tier": "fallback"})
+async def test_a_call_that_is_already_a_fallback_is_not_retried():
+    decision = route("research", RouteFeatures()).model_copy(update={"tier": "strong", "fallback": True})
     log, primary, fallback = calls(primary_error=ModelError("down"))
     with pytest.raises(ModelError):
         await invoke_with_fallback(decision, primary, fallback)

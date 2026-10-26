@@ -3,7 +3,7 @@
 After streaming, the answer's citations are validated against the union of the findings' citations
 and stored in answer_citations. The tokens have already gone out, so invalid IDs are reported, not
 rewritten. The tier comes from router.route() over the findings and context size. A provider error
-before the first token retries once on the fallback tier; after tokens have streamed it can't (a second
+before the first token retries once on the other tier; after tokens have streamed it can't (a second
 answer can't be spliced into one the user is reading). If the model call fails, the final message is a
 fixed notice (appended to any tokens that already streamed), so the graph always ends with an AIMessage.
 """
@@ -89,13 +89,13 @@ def make_synthesize(llm: BaseChatModel | Models | None) -> Callable[[Orchestrato
             try:
                 await stream(decision.tier)
             except Exception as exc:
-                if "".join(parts) or decision.tier == "fallback" or not is_provider_error(exc):
+                if "".join(parts) or not is_provider_error(exc):
                     raise
                 switched = fallback_decision(decision, exc)
                 logger.warning("synthesize: %s", switched.reason)
                 emit_routing(switched, step=step)
                 update["routing"].append(switched)
-                await stream("fallback")
+                await stream(switched.tier)
             answer = "".join(parts)
         except Exception as exc:
             logger.exception("synthesize model call failed")

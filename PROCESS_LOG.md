@@ -14,6 +14,37 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-26: OpenAI dropped as a chat provider; Gemini and Claude back each other up
+
+**Why:** the assignment needs two providers, and the third (OpenAI) was only the fallback tier.
+- **It failed together with what it protected:** when the OpenAI credits ran out, corpus search
+  (OpenAI embeddings) broke, and so did the fallback for both other providers.
+- **It was the slowest:** in the forced-OpenAI run, every compare and lit-review question hit the
+  60 s worker timeout.
+
+**Change:**
+- **Tiers:** `llm.py` now has two tiers, fast (Gemini) and strong (Claude), and `llm.FALLBACK` maps
+  each to the other.
+- **Fallback decisions:** `router.fallback_decision` records the other tier's provider and model.
+  `invoke_with_fallback` doesn't retry a decision that is already a fallback.
+- **Workers:** a tier that failed stays on the other tier for the rest of the run. Once both have
+  failed, a call runs without a retry.
+- **Removed:** `OPENAI_MODEL` and the OpenAI settings in `config.py`, `.env.example`, `deploy.sh`
+  and the tests, plus the unused `.tier-fallback` CSS selector.
+- **Kept:** `OPENAI_API_KEY` and `langchain-openai`, which embeddings and corpus search still use.
+  The RAGAS judge also stays `gpt-6.1-sol`. The Phase 9 `prov-openai` results stay as a record.
+- **Docs:** README and AGENTS.md updated to match.
+
+**Verified:**
+- `pytest tests/` gives 186 passed, 2 skipped.
+- **Live cross-provider checks:**
+  - Gemini continues a Claude tool history. It drops Claude's thinking blocks and keeps the tool
+    calls.
+  - The supervisor's structured output works on Claude.
+- **Live probe:** with `ANTHROPIC_API_KEY=invalid`, a compare question routed research to strong,
+  hit a 401, and fell back to Gemini. It finished with 12 valid citations, none unverified, and
+  exited 0.
+
 ### 2026-10-26: Phase 9, RAGAS, latency, cost, providers
 
 **Built**

@@ -4,7 +4,7 @@ Two steps in two virtualenvs. RAGAS 0.4.3 needs openai<2 and langchain-community
 pinned stack can't use, so it lives in .venv-eval (eval/requirements-ragas.txt):
 
   .venv/bin/python eval/run_ragas.py answer baseline                    # run the graph, save answers
-  .venv/bin/python eval/run_ragas.py answer gpt --provider openai --ids q01 q19
+  .venv/bin/python eval/run_ragas.py answer gemini --provider google --ids q01 q19
   .venv-eval/bin/python eval/run_ragas.py score baseline                # judge them, write the summary
 
 answer runs each question through the real graph and MCP servers, with in-memory history and a fresh
@@ -34,10 +34,10 @@ ROOT = Path(__file__).resolve().parent.parent
 QUESTIONS = ROOT / "eval" / "questions.jsonl"
 RESULTS = ROOT / "eval" / "results"
 
-JUDGE_MODEL = "gpt-6.1-sol"  # fixed so runs stay comparable; OpenAI is only the fallback tier in the app
+JUDGE_MODEL = "gpt-6.1-sol"  # fixed so runs stay comparable; not a chat provider in the app
 JUDGE_REASONING = "medium"   # "low" flipped verdicts on borderline paraphrases between runs
 EMBEDDING_MODEL = "text-embedding-3-small"
-PROVIDER_TIERS = {"google": "fast", "anthropic": "strong", "openai": "fallback"}
+PROVIDER_TIERS = {"google": "fast", "anthropic": "strong"}
 CITATION_TAG = re.compile(r"\[(?:\d{4}\.\d{4,5}#[^\]\s]+|web:[0-9a-f]{8}|db:[^\]\s]+|unverified)\]")
 MAX_CHUNK_IDS = 20  # get_chunks accepts at most this many IDs per call
 

@@ -53,8 +53,8 @@ class Failing(Unused):
         raise AuthenticationError("invalid x-api-key")
 
 
-def tiers(fast=None, strong=None, fallback=None):
-    models = {"fast": fast or Unused(), "strong": strong or Unused(), "fallback": fallback or Unused()}
+def tiers(fast=None, strong=None):
+    models = {"fast": fast or Unused(), "strong": strong or Unused()}
     return lambda tier: models[tier]
 
 
@@ -123,62 +123,62 @@ async def test_summary_downgrades_to_fast_for_one_paper():
     assert [(d.tier, d.reason) for d in out["routing"]] == [("fast", "one paper in scope: fast tier is enough")]
 
 
-async def test_a_failing_strong_provider_falls_back_and_stays_on_the_fallback():
+async def test_a_failing_strong_provider_falls_back_to_fast_and_stays_there():
     strong = Failing()
-    fallback = ScriptedChatModel(script=[call("search_corpus", {"query": "speed"}), AIMessage(CITED)])
+    fast = ScriptedChatModel(script=[call("search_corpus", {"query": "speed"}), AIMessage(CITED)])
     graph = build_graph(
-        workers={"research": make_worker(RESEARCH, [search_corpus], tiers(strong=strong, fallback=fallback))},
+        workers={"research": make_worker(RESEARCH, [search_corpus], tiers(strong=strong, fast=fast))},
         supervisor_llm=ScriptedSupervisor([decision("research", "compare 3DGS and NeRF", "compare"),
                                            decision("synthesize")]),
         synthesize_llm=answer_llm(),
     )
     final, traces = await run(graph)
-    assert routed(final)[1:3] == [("research", "strong", False), ("research", "fallback", True)]
+    assert routed(final)[1:3] == [("research", "strong", False), ("research", "fast", True)]
     assert streamed(traces)[1:3] == routed(final)[1:3]
     switched = final["routing"][2]
-    assert (switched.provider, switched.model) == ("openai", "test-openai-model")
+    assert (switched.provider, switched.model) == ("google", "test-gemini-model")
     assert "AuthenticationError from anthropic" in switched.reason
-    assert strong.calls == 1 and len(fallback.seen) == 2  # the second call went straight to the fallback
+    assert strong.calls == 1 and len(fast.seen) == 2  # the second call went straight to the fast tier
     assert final.get("errors", []) == [] and final["findings"][0].grounded
 
 
 async def test_supervisor_falls_back_when_its_provider_fails():
     graph = build_graph(workers={}, synthesize_llm=answer_llm(),
                         supervisor_llm=tiers(fast=ScriptedSupervisor([AuthenticationError("bad key")]),
-                                             fallback=ScriptedSupervisor([decision("synthesize")])))
+                                             strong=ScriptedSupervisor([decision("synthesize")])))
     final, _ = await run(graph)
-    assert routed(final)[:2] == [("supervisor", "fast", False), ("supervisor", "fallback", True)]
+    assert routed(final)[:2] == [("supervisor", "fast", False), ("supervisor", "strong", True)]
     assert final.get("errors", []) == [] and final["messages"][-1].text == ANSWER
 
 
 async def test_synthesize_falls_back_only_before_the_first_token():
     fallback = GenericFakeChatModel(messages=itertools.cycle([AIMessage("fallback answer")]))
     graph = build_graph(workers={}, supervisor_llm=ScriptedSupervisor([decision("synthesize")]),
-                        synthesize_llm=tiers(fast=BreakingStream(tokens=[]), fallback=fallback))
+                        synthesize_llm=tiers(fast=BreakingStream(tokens=[]), strong=fallback))
     final, _ = await run(graph)
-    assert routed(final)[-2:] == [("synthesize", "fast", False), ("synthesize", "fallback", True)]
+    assert routed(final)[-2:] == [("synthesize", "fast", False), ("synthesize", "strong", True)]
     assert final["messages"][-1].text == "fallback answer" and final.get("errors", []) == []
 
     graph = build_graph(workers={}, supervisor_llm=ScriptedSupervisor([decision("synthesize")]),
-                        synthesize_llm=tiers(fast=BreakingStream(tokens=["NeRF uses ", "an MLP."]), fallback=fallback))
+                        synthesize_llm=tiers(fast=BreakingStream(tokens=["NeRF uses ", "an MLP."]), strong=fallback))
     final, _ = await run(graph)
     assert routed(final)[-1] == ("synthesize", "fast", False)  # tokens had streamed: no second answer
     assert final["messages"][-1].text == f"NeRF uses an MLP.\n\n{ANSWER_FAILED_NOTICE}"
     assert [e.kind for e in final["errors"]] == ["synthesize_error"]
 
 
-async def test_a_failing_fallback_is_a_provider_error_and_the_graph_finishes():
+async def test_both_providers_failing_is_a_provider_error_and_the_graph_finishes():
     graph = build_graph(
-        workers={"research": make_worker(RESEARCH, [search_corpus], tiers(strong=Failing(), fallback=Failing()))},
+        workers={"research": make_worker(RESEARCH, [search_corpus], tiers(strong=Failing(), fast=Failing()))},
         supervisor_llm=ScriptedSupervisor([decision("research", "compare 3DGS and NeRF", "compare"),
                                            decision("synthesize")]),
         synthesize_llm=answer_llm(),
     )
     final, traces = await run(graph)
     assert [e.kind for e in final["errors"]] == ["provider_error"] and final["messages"][-1].text == ANSWER
-    assert ("research", "fallback", True) in streamed(traces)  # the switch was streamed before the fallback failed
+    assert ("research", "fast", True) in streamed(traces)  # the switch was streamed before the fallback failed
     # The failed worker's decisions are kept in state too, not only streamed.
-    assert [r for r in routed(final) if r[0] == "research"] == [("research", "strong", False), ("research", "fallback", True)]
+    assert [r for r in routed(final) if r[0] == "research"] == [("research", "strong", False), ("research", "fast", True)]
 
 
 class Slow(Unused):
@@ -210,7 +210,7 @@ async def test_a_stalled_supervisor_call_moves_to_the_fallback(monkeypatch):
             return RunnableLambda(decide)
 
     graph = build_graph(workers={}, synthesize_llm=answer_llm(),
-                        supervisor_llm=tiers(fast=Stalled([]), fallback=ScriptedSupervisor([decision("synthesize")])))
+                        supervisor_llm=tiers(fast=Stalled([]), strong=ScriptedSupervisor([decision("synthesize")])))
     final, _ = await run(graph)
-    assert routed(final)[:2] == [("supervisor", "fast", False), ("supervisor", "fallback", True)]
+    assert routed(final)[:2] == [("supervisor", "fast", False), ("supervisor", "strong", True)]
     assert "no reply within 0.1 s" in final["routing"][1].reason and final["messages"][-1].text == ANSWER

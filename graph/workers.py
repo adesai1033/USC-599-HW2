@@ -9,8 +9,8 @@ once more without tools to summarize. The history is append-only throughout.
 
 Every model call is routed (router.route() over the task type, SQL errors so far and papers in the
 instruction). A decision is emitted when the run starts and whenever the tier changes, e.g. data
-escalating after a failed run_sql. A provider error retries on the fallback tier, and a tier that
-failed stays on the fallback for the rest of the run.
+escalating after a failed run_sql. A provider error retries on the other tier, and a tier that
+failed stays on the other tier for the rest of the run.
 
 The parent-graph node maps the subgraph's result to a Finding and to retrieved_chunk_ids (every chunk
 any tool returned). Citations are validated against the sources this run's tools returned: the model
@@ -43,7 +43,7 @@ from config import worker_max_tool_rounds
 from graph.state import AgentError, Citation, Finding, OrchestratorState, RoutingDecision
 from graph.supervisor import latest_question
 from graph.trace import emit_routing, emit_trace
-from llm import Models, Tier, resolve_models
+from llm import FALLBACK, Models, Tier, resolve_models
 from rag.citations import attribution_mismatches, mark_unverified, validate
 from router import RouteFeatures, invoke_with_fallback, papers_in_scope, route, sql_errored
 
@@ -264,8 +264,10 @@ def make_worker(
     async def routed_call(decision: RoutingDecision, step: int | None, previous: list[RoutingDecision],
                           call: Callable[[Tier], Awaitable[AIMessage]]) -> tuple[AIMessage, list[RoutingDecision]]:
         """Run one model call on the decision's tier, with fallback. Returns the reply and the new decisions."""
-        if decision.tier in failed_tiers(previous):
-            return await call("fallback"), []  # this tier already failed this run; don't wait for it again
+        failed = failed_tiers(previous)
+        other = FALLBACK[decision.tier]
+        if decision.tier in failed and other not in failed:
+            return await call(other), []  # this tier already failed this run; don't wait for it again
         new: list[RoutingDecision] = []
         last = next((d for d in reversed(previous) if not d.fallback), None)
         if last is None or last.tier != decision.tier:
@@ -276,7 +278,9 @@ def make_worker(
             new.append(fallback)
             emit_routing(fallback, step=step)
 
-        reply, _ = await invoke_with_fallback(decision, lambda: call(decision.tier), lambda: call("fallback"), switched)
+        if other in failed:  # the other tier already failed: nothing to fall back to
+            return await call(decision.tier), new
+        reply, _ = await invoke_with_fallback(decision, lambda: call(decision.tier), lambda: call(other), switched)
         return reply, new
 
     def build_subgraph(run_tools: list[BaseTool], system_prompt: str):
@@ -354,7 +358,7 @@ def make_worker(
         history = [SystemMessage(system_prompt), *messages]
 
         async def ask_to_fix(request: str) -> str:
-            """One rewrite of the findings on the run's last routed tier (or its fallback, if that tier failed)."""
+            """One rewrite of the findings on the run's last routed tier (or the other tier, if that one failed)."""
             nonlocal routing
             decision = next(d for d in reversed(routing) if not d.fallback)
             history.append(HumanMessage(request))

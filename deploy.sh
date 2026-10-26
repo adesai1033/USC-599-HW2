@@ -10,8 +10,8 @@ IMAGE="us-west1-docker.pkg.dev/${PROJECT_ID}/images/paper-assistant"
 SERVICE_ACCOUNT="paper-assistant-run@${PROJECT_ID}.iam.gserviceaccount.com"
 
 # Keys come only from the shell (e.g. `set -a; source .env; set +a`), never from literals here.
-REQUIRED_VARS=(GOOGLE_API_KEY GEMINI_MODEL ANTHROPIC_API_KEY ANTHROPIC_MODEL OPENAI_API_KEY OPENAI_MODEL
-               OPENAI_EMBEDDING_MODEL TAVILY_API_KEY)
+REQUIRED_VARS=(GOOGLE_API_KEY GEMINI_MODEL ANTHROPIC_API_KEY ANTHROPIC_MODEL OPENAI_API_KEY OPENAI_EMBEDDING_MODEL
+               TAVILY_API_KEY)
 for var in "${REQUIRED_VARS[@]}"; do
   if [[ -z "${!var:-}" ]]; then
     echo "error: ${var} is not set. Export it first, e.g.: set -a; source .env; set +a" >&2

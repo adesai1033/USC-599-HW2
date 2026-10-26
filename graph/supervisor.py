@@ -27,7 +27,7 @@ from config import max_supervisor_steps, max_worker_retries, supervisor_timeout_
 from graph.history import format_earlier_turns
 from graph.state import AgentError, Dispatch, Finding, OrchestratorState, RoutingDecision, SupervisorDecision
 from graph.trace import emit_routing, emit_trace
-from llm import Models, Tier, resolve_models
+from llm import FALLBACK, Models, Tier, resolve_models
 from router import RouteFeatures, invoke_with_fallback, route
 
 logger = logging.getLogger("graph.supervisor")
@@ -174,7 +174,7 @@ def make_supervisor(
         failure_kind, failure = "", ""
         try:
             raw, _ = await invoke_with_fallback(routing[0], lambda: decider(routing[0].tier).ainvoke(messages),
-                                                lambda: decider("fallback").ainvoke(messages), switched,
+                                                lambda: decider(FALLBACK[routing[0].tier]).ainvoke(messages), switched,
                                                 # Routing takes 2-5 s; a stalled provider call (one took 53 s) moves on.
                                                 timeout=supervisor_timeout_s())
             decision = raw if isinstance(raw, SupervisorDecision) else SupervisorDecision.model_validate(raw)

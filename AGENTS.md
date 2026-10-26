@@ -26,7 +26,7 @@ noisy.
 | Layer | Choice |
 |---|---|
 | Orchestration | LangGraph, **explicit** `StateGraph`, **Supervisor** pattern |
-| LLM providers | Google Gemini (`langchain-google-genai`), Anthropic Claude Sonnet (`langchain-anthropic`), OpenAI (`langchain-openai`) |
+| LLM providers | Google Gemini (`langchain-google-genai`), Anthropic Claude Sonnet (`langchain-anthropic`); each is the other's fallback. OpenAI is not a chat provider |
 | Routing | `router.py` — rule-based over inspectable state features, every decision logged |
 | Embeddings | OpenAI `text-embedding-3-small` (does not count toward the provider requirement) |
 | Vector store | Chroma, embedded, persisted to `index/chroma/`, baked into the image read-only |
@@ -112,7 +112,7 @@ agents/
   registry.py        per-agent tool allowlist, prompt file, default tier
 prompts/             supervisor.md research.md data.md summary.md synthesize.md
 router.py            provider routing: state features → RoutingDecision; provider fallback
-llm.py               provider clients by tier (fast / strong / fallback)
+llm.py               provider clients by tier (fast / strong); each tier's fallback is the other
 mcp_client.py        MultiServerMCPClient setup, persistent sessions, discovery, per-agent filtering, failure handling
 rag/
   retriever.py       Chroma + embeddings retriever as an LCEL runnable
@@ -226,7 +226,7 @@ and `summary` 4.
 ## LLM routing
 
 Tiers are configured in `llm.py` from env vars. **fast** = Gemini Flash, **strong** =
-Claude Sonnet, **fallback** = OpenAI. `router.route(call_site, state) -> RoutingDecision`
+Claude Sonnet; each is the other's fallback. `router.route(call_site, state) -> RoutingDecision`
 is a pure function, unit-tested, and its output is streamed to the UI.
 
 | Call site | Default | Escalate to strong when | Dimension |
@@ -238,14 +238,14 @@ is a pure function, unit-tested, and its output is streamed to the UI.
 | `synthesize` | fast | ≥ 2 findings, ≥ 3 distinct papers cited, or estimated context > `STRONG_CONTEXT_TOKENS` | hybrid |
 
 On a provider error (timeout, 429, 5xx, auth failure) the call retries once on the
-**fallback** provider and records `fallback=True` with the original error class.
+**other** provider (fast ↔ strong, `llm.FALLBACK`) and records `fallback=True`, the other tier, and the
+original error class. A call that is itself a fallback is not retried.
 `RoutingDecision = {call_site, agent, provider, model, tier, dimension, reason, fallback}`.
 
 How it's wired:
 - Graph nodes take a `Models` resolver (tier → chat model, `llm.resolve_models`); tests pass one fake
   for every tier, or a dict of fakes per tier.
-- Every call uses low thinking: Gemini's `thinking_level`, OpenAI's `reasoning_effort`, and Claude
-  without extended thinking.
+- Every call uses low thinking: Gemini's `thinking_level`, and Claude without extended thinking.
 - Each decision is emitted as a trace event of kind `routing` that carries the full `RoutingDecision`,
   and is appended to `routing` in state.
 - Workers route on every model call but emit only when the tier changes. A tier that failed falls back
@@ -377,7 +377,7 @@ Do not violate them to "make tests pass."
    - Malformed response: an off-schema or unparseable tool payload.
    - Worker failure: an exception inside a worker becomes an `AgentError`, and the
      supervisor continues.
-   - Provider failure: falls back to the fallback provider. If that also fails, emit
+   - Provider failure: falls back to the other provider. If that also fails, emit
      `error` then `done`.
    - Empty retrieval: answer "not in the corpus" and offer a web search instead.
 8. **Validate inside our servers.** `corpus` bounds `k` and validates filter values.
@@ -386,7 +386,7 @@ Do not violate them to "make tests pass."
 9. **Ingestion is offline.** Never fetch, parse, embed, or build the DB at request time or
    at container startup. The image ships a pre-built `index/`.
 10. **Pinned, verified model IDs.** Model IDs come from env vars (`GEMINI_MODEL`,
-    `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `OPENAI_EMBEDDING_MODEL`) with defaults in
+    `ANTHROPIC_MODEL`, `OPENAI_EMBEDDING_MODEL`) with defaults in
     `config.py` matching `.env.example`. Never guess a model ID; verify it against the
     provider's docs and record the verification date in the README.
 11. **Read `PORT` from the environment.** Never hard-code 8080 in `main.py`.
@@ -493,7 +493,7 @@ Minimum before any deploy:
 
 - Probe failures:
   - point the `corpus` manifest at a nonexistent command and confirm the app starts, other agents work, and the answer says corpus search is unavailable;
-  - set an invalid `ANTHROPIC_API_KEY` and confirm fallback to OpenAI appears in the routing event;
+  - set an invalid `ANTHROPIC_API_KEY` and confirm fallback to Gemini appears in the routing event;
   - set an invalid `TAVILY_API_KEY` and confirm a graceful current-events answer.
 - After deploy, also run: a cold-start request on the deployed URL with no failure, and a
   multi-turn session that survives a new revision deploy (proving history is in Firestore,
