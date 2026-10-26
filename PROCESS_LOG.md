@@ -29,6 +29,13 @@ Dated record of each code change, newest first.
   replaced by one that checks startup waits and that a failed start is still served. 188 passed,
   2 skipped.
 - **Locally:** the log order is MCP servers up, then startup complete, then uvicorn listening.
+- **Verified on `00009-tkh`:**
+  - **Rollout instance:** all 3 servers up in 34 s, then the startup probe passed.
+  - **5 concurrent corpus and data questions:** all `done`, with 5–17 valid citations each and no
+    errors.
+  - **14 concurrent cheap questions:** forced two autoscaled instances. Both had all 3 servers up
+    (22 s and 32 s) before the probe passed, and all 14 answers ended in `done` with no errors.
+    Before the fix, the same situation lost both stdio servers.
 
 ### 2026-10-26: Cold-start corpus failure found and fixed (stdio handshake timeout)
 
