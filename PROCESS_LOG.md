@@ -14,6 +14,27 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-26: Push and redeploy (`00006-wlc`); corpus failed on the first start
+
+- **Push:** 11 commits through `e44ae34`.
+- **Deploy:** `deploy.sh` built and deployed `00006-wlc`. It shipped the two-provider fallback and
+  the NSVF Tanks and Temples relabel. Its env vars no longer carry `OPENAI_MODEL` or the probe's
+  overrides.
+- **Traffic:** the new revision got 0% at first, because the Phase 8 `--no-traffic` probe had pinned
+  100% to `00004-nxk`. `update-traffic --to-latest` fixed it, and traffic now follows new deploys.
+- **Smoke test:**
+  - "Lowest LPIPS on Tanks and Temples" ranks only the real-scene benchmark, with 13 valid
+    citations.
+  - The 3DGS lookup got 5 valid corpus citations, once the corpus was back (see below).
+- **Logs:** all 86 logged Tavily URLs show `tavilyApiKey=<redacted>`.
+- **Problem:** on the new instance's first start, the `corpus` server failed after 32 s, inside the
+  90 s limit, with only "ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)". The
+  first question fell back to web search. The server reconnected on the next turn (13 s).
+  - There was no OOM or kill message, and the corpus process logged nothing.
+  - Locally the servers start cleanly in under 3 s (3 out of 3 runs).
+- **Fix for next time:** `mcp_client.describe_error` logs the leaf exceptions of an exception group,
+  so a repeat names the real cause. Test added; 187 passed, 2 skipped.
+
 ### 2026-10-26: OpenAI dropped as a chat provider; Gemini and Claude back each other up
 
 **Why:** the assignment needs two providers, and the third (OpenAI) was only the fallback tier.

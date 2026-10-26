@@ -334,3 +334,10 @@ async def test_unhealthy_server_description_reaches_the_workers_prompt():
     finally:
         await tools.aclose()
 
+
+
+def test_a_server_failure_inside_an_exception_group_reports_the_leaf_cause():
+    group = ExceptionGroup("unhandled errors in a TaskGroup", [
+        ExceptionGroup("inner", [BrokenPipeError("stdout closed")]), ValueError("bad frame")])
+    assert mcp_client.describe_error(group) == "BrokenPipeError: stdout closed; ValueError: bad frame"
+    assert mcp_client.describe_error(KeyError("x")) == "KeyError: 'x'"

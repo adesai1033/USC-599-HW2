@@ -224,6 +224,13 @@ def _normalize_tavily_result(tool_name: str, result: CallToolResult) -> CallTool
         return _error_result(f"{tool_name} returned a malformed response ({exc}); web results are unavailable for this call.")
 
 
+def describe_error(exc: BaseException) -> str:
+    """'Type: message' for an exception; for an exception group, its leaf exceptions, which name the cause."""
+    if isinstance(exc, BaseExceptionGroup):
+        return "; ".join(describe_error(e) for e in exc.exceptions)
+    return f"{type(exc).__name__}: {exc}"
+
+
 def _error_result(text: str) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
 
@@ -317,7 +324,7 @@ class MCPTools:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._mark_down(name, f"{type(exc).__name__}: {exc}")
+            self._mark_down(name, describe_error(exc))
             if not ready.done():
                 ready.set_exception(exc)
             else:  # it was up and then died (e.g. the process exited): retry on the next turn
@@ -370,9 +377,9 @@ class MCPTools:
         except McpError as exc:
             if exc.error.code == REQUEST_TIMEOUT_CODE:
                 return _error_result(f"{request.name} timed out after {timeout:g} s; try a narrower request.")
-            self._mark_down(name, f"{type(exc).__name__}: {exc}")
+            self._mark_down(name, describe_error(exc))
         except Exception as exc:  # transport failure: the server crashed or the connection dropped
-            self._mark_down(name, f"{type(exc).__name__}: {exc}")
+            self._mark_down(name, describe_error(exc))
         status.retry_at = time.monotonic()  # it was healthy until now: retry on the next turn
         return _error_result(status.description)
 
