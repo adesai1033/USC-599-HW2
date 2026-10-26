@@ -60,6 +60,16 @@ def test_a_number_repeated_with_its_setting_in_another_table_is_kept_once():
                                                           (0.237, None), (0.237, "w/GLO")]
 
 
+def test_tanks_and_temples_in_an_nsvf_table_is_the_masked_object_subset():
+    def row(benchmark, table):
+        return {"benchmark": benchmark, "page": 13, "table": table}
+
+    rows = [row("Synthetic-NSVF", "Table 1"), row("Tanks and Temples", "Table 1"), row("Tanks and Temples", "Table 2")]
+    assert [r["benchmark"] for r in extract_results.relabel_nsvf_tanks(rows)] == [
+        "Synthetic-NSVF", "Tanks and Temples (NSVF masked objects)", "Tanks and Temples"]
+    assert extract_results.normalize_benchmark("Syn.-NSVF") == "Synthetic-NSVF"
+
+
 def insert(conn, value, verified, metric="PSNR"):
     conn.execute("INSERT INTO results VALUES ('2308.04079', 'Mip-NeRF 360', NULL, ?, ?, ?, NULL, ?)",
                  (metric, value, int(metric != "LPIPS"), verified))

@@ -66,15 +66,17 @@ BENCHMARK_ALIASES = {
     "mipnerf360": "Mip-NeRF 360", "mip360": "Mip-NeRF 360", "360": "Mip-NeRF 360",
     "mipnerf360dataset": "Mip-NeRF 360",
     "tanksandtemples": "Tanks and Temples", "tankstemples": "Tanks and Temples", "tt": "Tanks and Temples",
-    "tandt": "Tanks and Temples", "tnt": "Tanks and Temples",
+    "tandt": "Tanks and Temples", "tnt": "Tanks and Temples", "tankstemplates": "Tanks and Temples",
     "deepblending": "Deep Blending", "db": "Deep Blending",
     "llff": "LLFF", "nerfllff": "LLFF", "realforwardfacing": "LLFF", "forwardfacing": "LLFF",
     "dtu": "DTU",
     "blender": "Blender", "nerfsynthetic": "Blender", "syntheticnerf": "Blender", "blendersynthetic": "Blender",
-    "nerfsyntheticblender": "Blender", "syntheticblender": "Blender", "synthetic": "Blender",
+    "nerfsyntheticblender": "Blender", "syntheticblender": "Blender", "synthetic": "Blender", "synnerf": "Blender",
+    "nsvf": "Synthetic-NSVF", "syntheticnsvf": "Synthetic-NSVF", "synnsvf": "Synthetic-NSVF",
     "scannet": "ScanNet", "scannetv2": "ScanNet", "scannetpp": "ScanNet++",
     "replica": "Replica",
 }
+NSVF_TANKS = "Tanks and Temples (NSVF masked objects)"
 # Metric spellings (lowercased, letters and digits only) -> a KNOWN_METRICS name.
 METRIC_ALIASES = {
     "psnr": "PSNR", "ssim": "SSIM", "lpips": "LPIPS",
@@ -217,7 +219,19 @@ async def extract_paper(model, arxiv_id: str, title: str, known_ids: set[str], g
                 continue
             seen.add(natural_key)
             rows.append(row | {"page": page_no + 1, "table": result.table})
-    return drop_unlabeled_repeats(rows)
+    return drop_unlabeled_repeats(relabel_nsvf_tanks(rows))
+
+
+def relabel_nsvf_tanks(rows: list[dict]) -> list[dict]:
+    """Rename "Tanks and Temples" in tables that also report Synthetic-NSVF.
+
+    Those tables follow NSVF's protocol, whose Tanks and Temples is a masked-object subset (DVGO,
+    KiloNeRF, TensoRF), not the real-scene benchmark that 3DGS-style papers report. Mixing the two would
+    rank them together.
+    """
+    nsvf_tables = {(r["page"], r["table"]) for r in rows if r["benchmark"] == "Synthetic-NSVF"}
+    return [r | {"benchmark": NSVF_TANKS} if r["benchmark"] == "Tanks and Temples" and (r["page"], r["table"]) in nsvf_tables
+            else r for r in rows]
 
 
 def drop_unlabeled_repeats(rows: list[dict]) -> list[dict]:
