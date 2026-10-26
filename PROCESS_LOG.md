@@ -14,6 +14,34 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-26: Phase 10, documentation
+
+- **`docs/architecture.md`** (it was empty):
+  - Mermaid diagrams of the orchestration graph and the worker subgraph.
+  - The state schema, the agent table (tools and tier or model per agent), and the routing table with
+    dimensions and the two-provider fallback.
+  - The RAG shape (corpus, parsing, chunking, embedding, k and re-ranking, the augmentation format,
+    the three citation formats, the paper database).
+  - The MCP servers and the tool-sharing rationale, the Firestore durable-state design, and the SSE
+    contract.
+- **`docs/evaluation.md`** (it was empty):
+  - The RAGAS method, the baseline and the one iteration, by question type, with the weakest
+    questions and caveats.
+  - Warm and cold latency by stage, with stage definitions.
+  - Cost per query, with the pricing sources and date.
+  - The three-provider comparison and why OpenAI was dropped.
+  - While writing it I checked the q09 and q10 answers instead of describing them from their scores.
+    My first descriptions were wrong.
+- **`README.md`**, rewritten from the Phase 1 version:
+  - Setup, local run, the CLI, tests and probes.
+  - The ingestion steps in order, with costs, and the eval venv and commands.
+  - Docker, the deploy, and the fresh-GCP-project commands (APIs, Artifact Registry, Firestore,
+    least-privilege service account).
+  - Providers and the verified model IDs, the full SSE contract, cost and access notes, and
+    attribution.
+- **Not touched:** the four graded `PROCESS_LOG.md` sections, which are left for me to write in my own
+  voice. The template-era `docs/cost_analysis.md` and `docs/alternative_*.md` are also unchanged.
+
 ### 2026-10-26: Startup waits for the MCP servers before the port opens
 
 - **Symptom (`00008-85k`):** after the handshake fix, the rollout instance was fine, but an
