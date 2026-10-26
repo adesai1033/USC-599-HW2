@@ -14,6 +14,14 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-26: Answers write math as Unicode, not LaTeX
+
+- **Symptom:** a 3DGS rendering answer showed raw LaTeX (`$\Sigma = R S S^\top R^\top$`,
+  `$16 \times 16$`). The frontend's Markdown subset has no math rendering.
+- **Fix:** `prompts/synthesize.md` now says to write math as plain text with Unicode symbols, never
+  LaTeX or `$`, and to rewrite LaTeX found in the findings. No new frontend dependency.
+- **Check:** the same question via `scripts/cli.py` gave Σ = R S Sᵀ Rᵀ, 16×16, α < 1/255 and no `$`.
+
 ### 2026-10-26: `docs/cost_analysis.md` brought up to date
 
 - The template-era file listed OpenAI as the supervisor and data provider and offered NVIDIA NIM,
