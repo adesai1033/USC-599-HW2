@@ -14,6 +14,12 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-26: `docs/orchestration_flow.md`
+
+- New page of Mermaid diagrams: the end-to-end flow (browser, supervisor loop, workers, MCP servers,
+  Firestore, SSE), the worker subgraph, an example two-worker turn as a sequence diagram, and a table
+  of failure paths. Linked from the README and `docs/architecture.md`.
+
 ### 2026-10-26: Answers write math as Unicode, not LaTeX
 
 - **Symptom:** a 3DGS rendering answer showed raw LaTeX (`$\Sigma = R S S^\top R^\top$`,

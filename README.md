@@ -22,6 +22,8 @@ example:
 - **Deployed:** https://paper-assistant-7j3km77uuq-uw.a.run.app (Cloud Run, `us-west1`).
 - **Architecture:** [`docs/architecture.md`](docs/architecture.md), with the diagrams, state
   schema, agents, routing, RAG, MCP and durable state.
+- **Orchestration flow:** [`docs/orchestration_flow.md`](docs/orchestration_flow.md), one question
+  traced through the supervisor, workers, MCP servers and failure paths.
 - **Evaluation:** [`docs/evaluation.md`](docs/evaluation.md), with RAGAS, latency, cost and the
   provider comparison.
 

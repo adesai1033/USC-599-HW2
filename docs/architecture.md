@@ -8,6 +8,9 @@ Firestore, so it survives instance replacement on Cloud Run.
 
 ## Orchestration graph
 
+A step-by-step walk-through, with an example turn and the failure paths, is in
+[`orchestration_flow.md`](orchestration_flow.md).
+
 `graph/build.py` assembles an explicit `StateGraph`. The supervisor's conditional edge dispatches on
 `state["next"]`, a field set by the supervisor's structured output, never by matching the query text.
 
