@@ -14,6 +14,19 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-26: Cold-start corpus failure found and fixed (stdio handshake timeout)
+
+- **Diagnosis:** `00007-xzq` shipped the `describe_error` logging, and the next cold start named the
+  cause: `McpError: Timed out while waiting for response to ClientRequest. Waited 30.0 seconds.`
+  - The rollout instance's corpus server came up in about 29.5 s, just under the limit.
+  - A second, autoscaled instance lost both stdio servers (corpus and papers_db).
+- **Cause (ours):** `build_connection` set the session-wide `read_timeout_seconds` to `TOOL_TIMEOUT_S`
+  (30 s). That also covers the `initialize` and `list_tools` handshake, and the corpus server loads the
+  Chroma index before it answers. So `MCP_START_TIMEOUT_S` (raised to 90 in Phase 8) never took
+  effect.
+- **Fix:** the session-wide limit is now `MCP_START_TIMEOUT_S`. Tool calls still pass their own
+  `TOOL_TIMEOUT_S` per call, so tool-call behavior is unchanged. Test added; 188 passed, 2 skipped.
+
 ### 2026-10-26: Push and redeploy (`00006-wlc`); corpus failed on the first start
 
 - **Push:** 11 commits through `e44ae34`.

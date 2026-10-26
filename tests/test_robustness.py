@@ -341,3 +341,11 @@ def test_a_server_failure_inside_an_exception_group_reports_the_leaf_cause():
         ExceptionGroup("inner", [BrokenPipeError("stdout closed")]), ValueError("bad frame")])
     assert mcp_client.describe_error(group) == "BrokenPipeError: stdout closed; ValueError: bad frame"
     assert mcp_client.describe_error(KeyError("x")) == "KeyError: 'x'"
+
+
+def test_the_startup_handshake_gets_the_start_timeout_not_the_tool_timeout(monkeypatch):
+    monkeypatch.setenv("MCP_START_TIMEOUT_S", "90")
+    monkeypatch.setenv("TOOL_TIMEOUT_S", "30")
+    for manifest in mcp_client.load_manifests("mcp_config.json").values():
+        if manifest["transport"] == "stdio":
+            assert mcp_client.build_connection(manifest)["session_kwargs"]["read_timeout_seconds"].total_seconds() == 90

@@ -131,7 +131,10 @@ def _expand(value: str) -> str:
 
 def build_connection(manifest: dict) -> dict:
     """Turn one manifest into a langchain-mcp-adapters connection dict."""
-    session_kwargs = {"read_timeout_seconds": timedelta(seconds=tool_timeout_s())}
+    # The session-wide limit covers only the startup handshake (initialize, list_tools): every tool call
+    # passes its own TOOL_TIMEOUT_S. On a cold Cloud Run instance the corpus server loads the Chroma index
+    # before it answers initialize, which took about 30 s, so the handshake gets the start timeout.
+    session_kwargs = {"read_timeout_seconds": timedelta(seconds=mcp_start_timeout_s())}
     if manifest["transport"] == "stdio":
         # "python" means this interpreter, so servers run in the same venv as the app.
         command = sys.executable if manifest["command"] == "python" else manifest["command"]
