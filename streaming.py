@@ -96,8 +96,13 @@ def _ms_since(start: float) -> int:
     return round((time.perf_counter() - start) * 1000)
 
 
-async def graph_frames(graph: CompiledStateGraph, inputs: dict, *, session_id: str, start: float) -> AsyncIterator[str]:
-    """Run one turn of the graph and yield its SSE frames, ending with done whatever happens."""
+async def graph_frames(graph: CompiledStateGraph, inputs: dict, *, session_id: str, start: float,
+                       final_state: dict | None = None) -> AsyncIterator[str]:
+    """Run one turn of the graph and yield its SSE frames, ending with done whatever happens.
+
+    If `final_state` is given, it is filled with the graph's final state (eval/run_ragas.py reads the
+    retrieved chunk IDs from it).
+    """
     usage = UsageTimer()
     final: dict = {}
     streamed: list[str] = []
@@ -146,6 +151,8 @@ async def graph_frames(graph: CompiledStateGraph, inputs: dict, *, session_id: s
     else:
         yield sse_event("error", {"message": RUN_FAILED_MESSAGE})
 
+    if final_state is not None:
+        final_state.update(final)
     yield sse_event("done", {
         "session_id": session_id,
         "timings": {"ttft_ms": ttft_ms, "retrieval_ms": retrieval_ms, "llm_ms": usage.llm_ms,

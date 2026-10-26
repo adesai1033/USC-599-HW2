@@ -25,6 +25,7 @@ dist/
 
 # Virtual environments
 .venv/
+.venv-eval/
 venv/
 env/
 ENV/
@@ -66,3 +67,8 @@ node_modules/
 # GCP / deploy artifacts
 .gcloudignore-generated
 *.tar.gz
+
+# Eval answer files hold full paper chunk texts; keep only scores, summaries and latency runs.
+eval/results/*.jsonl
+!eval/results/*.scores.jsonl
+!eval/results/latency-*.jsonl
