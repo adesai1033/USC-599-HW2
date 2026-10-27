@@ -14,6 +14,16 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-26: Supervisor escalation experiment archived
+
+- The experiment's code is out of the live app: `config.py`, `router.py`, `graph/supervisor.py`,
+  `tests/test_router.py` and `eval/run_ragas.py` are back to `287fac3`.
+- Nothing was deleted. Everything is in `eval/archive/supervisor_escalation/`: the write-up
+  (moved from `docs/evaluation.md`, which keeps a short pointer), the code as a patch, the comparison
+  script, the RAGAS results, and the full answers (local, gitignored). Git tag
+  `experiment/supervisor-escalation` marks `9c0aba7`, where the code was live. `eval/` is excluded
+  from the image, so the archive isn't deployed.
+
 ### 2026-10-26: Supervisor escalation, measured and left off
 
 - **Question:** should the supervisor run on Claude, since every turn passes through it?

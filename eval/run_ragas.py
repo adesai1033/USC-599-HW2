@@ -5,16 +5,13 @@ pinned stack can't use, so it lives in .venv-eval (eval/requirements-ragas.txt):
 
   .venv/bin/python eval/run_ragas.py answer baseline                    # run the graph, save answers
   .venv/bin/python eval/run_ragas.py answer gemini --provider google --ids q01 q19
-  .venv/bin/python eval/run_ragas.py answer escalate --routing escalate # supervisor escalation on
   .venv-eval/bin/python eval/run_ragas.py score baseline                # judge them, write the summary
 
 answer runs each question through the real graph and MCP servers, with in-memory history and a fresh
 session per question, the same way POST /chat/stream does (streaming.graph_frames). It saves the answer,
 the corpus chunks retrieved in that run (in retrieval order, texts fetched with get_chunks), routing,
 timings and token usage to eval/results/<label>.jsonl. --provider sends every call to one provider, for
-the provider comparison; the default is the normal router. --routing escalate turns on
-SUPERVISOR_ESCALATION; --routing senior sends every supervisor call to the strong tier and every research
-call to the fast tier (a "senior planner, fast executor" split, for comparison only).
+the provider comparison; the default is the normal router.
 
 score adds four metrics (names from RAGAS 0.4.3's metrics.collections): faithfulness, answer_relevancy,
 context_precision_with_reference and context_recall. The judge is JUDGE_MODEL with
@@ -61,24 +58,6 @@ def parse_sse(frames: list[str]) -> list[tuple[str, dict]]:
     return events
 
 
-def senior_routing() -> None:
-    """Supervisor always strong, research always fast; the other call sites keep the normal rules."""
-    import graph.supervisor
-    import graph.workers
-    import router
-
-    original = router.route
-
-    def route(call_site, features):
-        if call_site == "supervisor":
-            return router._decision(call_site, "strong", "capability", "senior planner: supervisor on the strong tier")
-        if call_site == "research":
-            return router._decision(call_site, "fast", "capability", "fast executor: research on the fast tier")
-        return original(call_site, features)
-
-    graph.supervisor.route = graph.workers.route = route
-
-
 def force_provider(provider: str) -> None:
     """Send every model call to one provider's tier, whatever the router decides."""
     import llm
@@ -99,7 +78,7 @@ async def chunk_texts(mcp, chunk_ids: list[str]) -> list[str]:
     return [texts[i] for i in chunk_ids if i in texts]
 
 
-async def answer(label: str, ids: list[str] | None, provider: str | None, routing: str | None = None) -> Path:
+async def answer(label: str, ids: list[str] | None, provider: str | None) -> Path:
     sys.path.insert(0, str(ROOT))
     from langchain_core.messages import HumanMessage
 
@@ -109,10 +88,6 @@ async def answer(label: str, ids: list[str] | None, provider: str | None, routin
     from streaming import graph_frames
 
     install_log_redaction()
-    if routing == "escalate":
-        os.environ["SUPERVISOR_ESCALATION"] = "1"
-    elif routing == "senior":
-        senior_routing()
     if provider:
         force_provider(provider)
     mcp = MCPTools(load_manifests())
@@ -137,7 +112,6 @@ async def answer(label: str, ids: list[str] | None, provider: str | None, routin
                     "retrieved_ids": retrieved, "contexts": await chunk_texts(mcp, retrieved) if retrieved else [],
                     "routing": [d for n, d in events if n == "routing"],
                     "dispatches": [d.worker for d in final.get("dispatches", [])],
-                    "decisions": [d["decision"] for n, d in events if n == "trace" and d.get("decision")],
                     "tools": [d["detail"].split("(")[0] for n, d in events if n == "trace" and d["kind"] == "tool_call"],
                     "citations": next((d for n, d in events if n == "citations"), {}),
                     "errors": [e.kind for e in final.get("errors", [])],
@@ -258,13 +232,12 @@ def main() -> None:
     run.add_argument("label")
     run.add_argument("--ids", nargs="+", help="only these question IDs")
     run.add_argument("--provider", choices=sorted(PROVIDER_TIERS), help="send every model call to this provider")
-    run.add_argument("--routing", choices=["escalate", "senior"], help="supervisor routing variant to measure")
     judged = steps.add_parser("score", help="judge saved answers with RAGAS (eval venv)")
     judged.add_argument("label")
     args = parser.parse_args()
     os.environ.setdefault("STATE_BACKEND", "memory")
     if args.step == "answer":
-        print(asyncio.run(answer(args.label, args.ids, args.provider, args.routing)))
+        print(asyncio.run(answer(args.label, args.ids, args.provider)))
     else:
         asyncio.run(score(args.label))
 

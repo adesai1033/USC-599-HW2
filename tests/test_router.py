@@ -41,33 +41,6 @@ def test_supervisor_is_always_fast():
     assert (d.tier, d.provider, d.dimension, d.fallback) == ("fast", "google", "cost", False)
 
 
-def test_supervisor_escalation_is_off_by_default(monkeypatch):
-    monkeypatch.delenv("SUPERVISOR_ESCALATION", raising=False)
-    assert route("supervisor", RouteFeatures(worker_failures=2, follow_up=True)).tier == "fast"
-
-
-@pytest.mark.parametrize("features", [
-    RouteFeatures(worker_failures=1),
-    RouteFeatures(ungrounded_findings=1),
-    RouteFeatures(follow_up=True),
-    RouteFeatures(task_type="compare", n_findings=1),
-])
-def test_supervisor_escalates_for_hard_decisions_when_enabled(monkeypatch, features):
-    monkeypatch.setenv("SUPERVISOR_ESCALATION", "1")
-    d = route("supervisor", features)
-    assert (d.tier, d.provider, d.dimension) == ("strong", "anthropic", "hybrid")
-
-
-@pytest.mark.parametrize("features", [
-    RouteFeatures(),
-    RouteFeatures(task_type="compare"),  # first decision: nothing to combine yet
-    RouteFeatures(task_type="lookup", n_findings=1),
-])
-def test_supervisor_stays_fast_for_easy_decisions_when_enabled(monkeypatch, features):
-    monkeypatch.setenv("SUPERVISOR_ESCALATION", "1")
-    assert route("supervisor", features).tier == "fast"
-
-
 def test_data_escalates_after_a_sql_error():
     assert tiers("data", [{}, {"sql_errored": True}]) == ["fast", "strong"]
     assert route("data", RouteFeatures(sql_errored=True)).dimension == "hybrid"

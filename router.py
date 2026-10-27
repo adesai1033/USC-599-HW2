@@ -5,8 +5,6 @@ in scope, findings, context size), so every decision can be logged, streamed and
 
   call site   default  escalate (or downgrade) when                                         dimension
   supervisor  fast     never: classification is cheap                                        cost
-              (with SUPERVISOR_ESCALATION on: a worker failed or came back ungrounded, the
-              turn is a follow-up, or multi-paper findings must be combined)              hybrid
   data        fast     a run_sql call in this run errored                                    hybrid
   research    fast     task_type is compare or lit_review                                    capability
   summary     strong   downgrade to fast when exactly one paper is in scope                  capability
@@ -26,7 +24,7 @@ from typing import Literal, TypeVar
 
 from langchain_core.messages import AnyMessage, ToolMessage
 
-from config import strong_context_tokens, supervisor_escalation
+from config import strong_context_tokens
 from graph.guard import is_provider_error
 from graph.state import Finding, RoutingDecision
 from llm import FALLBACK, PROVIDERS, Tier, model_id
@@ -52,9 +50,6 @@ class RouteFeatures:
     n_findings: int = 0
     n_cited_papers: int = 0
     context_tokens: int = 0
-    worker_failures: int = 0
-    ungrounded_findings: int = 0
-    follow_up: bool = False
 
 
 def sql_errored(messages: Iterable[AnyMessage]) -> bool:
@@ -85,16 +80,7 @@ def route(call_site: CallSite, features: RouteFeatures) -> RoutingDecision:
     """Pick the tier for one LLM call from inspectable features; the reason names the deciding values."""
     f = features
     if call_site == "supervisor":
-        if not supervisor_escalation():
-            return _decision(call_site, "fast", "cost", "routing decisions are a cheap classification: fast tier")
-        reasons = [r for r, hit in [(f"{f.worker_failures} worker failure(s) to re-plan around", f.worker_failures > 0),
-                                    (f"{f.ungrounded_findings} ungrounded finding(s)", f.ungrounded_findings > 0),
-                                    ("follow-up turn that refers to earlier answers", f.follow_up),
-                                    (f"combining {f.n_findings} finding(s) for task_type={f.task_type}",
-                                     f.n_findings > 0 and f.task_type in MULTI_PAPER_TASKS)] if hit]
-        if reasons:
-            return _decision(call_site, "strong", "hybrid", f"{', '.join(reasons)}: strong tier")
-        return _decision(call_site, "fast", "hybrid", "a first or straightforward routing decision: fast tier")
+        return _decision(call_site, "fast", "cost", "routing decisions are a cheap classification: fast tier")
     if call_site == "data":
         if f.sql_errored:
             return _decision(call_site, "strong", "hybrid", "a run_sql call errored this run: strong tier to fix the query")

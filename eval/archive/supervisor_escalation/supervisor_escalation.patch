@@ -1,0 +1,221 @@
+diff --git a/config.py b/config.py
+index 9e6f031..d629740 100644
+--- a/config.py
++++ b/config.py
+@@ -75,6 +75,12 @@ def strong_context_tokens() -> int:
+     return _env_number("STRONG_CONTEXT_TOKENS", 8000, 1)
+ 
+ 
++def supervisor_escalation() -> bool:
++    """SUPERVISOR_ESCALATION (default off): let the supervisor move to the strong tier for hard decisions
++    (re-planning after a failed or ungrounded worker, a follow-up turn, combining multi-paper findings)."""
++    return os.environ.get("SUPERVISOR_ESCALATION", "").strip().lower() in ("1", "true", "yes", "on")
++
++
+ def mcp_reconnect_backoff_s() -> float:
+     """MCP_RECONNECT_BACKOFF_S (default 30): wait after a failed reconnect before trying a server again."""
+     return _env_number("MCP_RECONNECT_BACKOFF_S", 30, 0, float)
+diff --git a/eval/run_ragas.py b/eval/run_ragas.py
+index 9bbbfbe..77a3699 100644
+--- a/eval/run_ragas.py
++++ b/eval/run_ragas.py
+@@ -5,13 +5,16 @@ pinned stack can't use, so it lives in .venv-eval (eval/requirements-ragas.txt):
+ 
+   .venv/bin/python eval/run_ragas.py answer baseline                    # run the graph, save answers
+   .venv/bin/python eval/run_ragas.py answer gemini --provider google --ids q01 q19
++  .venv/bin/python eval/run_ragas.py answer escalate --routing escalate # supervisor escalation on
+   .venv-eval/bin/python eval/run_ragas.py score baseline                # judge them, write the summary
+ 
+ answer runs each question through the real graph and MCP servers, with in-memory history and a fresh
+ session per question, the same way POST /chat/stream does (streaming.graph_frames). It saves the answer,
+ the corpus chunks retrieved in that run (in retrieval order, texts fetched with get_chunks), routing,
+ timings and token usage to eval/results/<label>.jsonl. --provider sends every call to one provider, for
+-the provider comparison; the default is the normal router.
++the provider comparison; the default is the normal router. --routing escalate turns on
++SUPERVISOR_ESCALATION; --routing senior sends every supervisor call to the strong tier and every research
++call to the fast tier (a "senior planner, fast executor" split, for comparison only).
+ 
+ score adds four metrics (names from RAGAS 0.4.3's metrics.collections): faithfulness, answer_relevancy,
+ context_precision_with_reference and context_recall. The judge is JUDGE_MODEL with
+@@ -58,6 +61,24 @@ def parse_sse(frames: list[str]) -> list[tuple[str, dict]]:
+     return events
+ 
+ 
++def senior_routing() -> None:
++    """Supervisor always strong, research always fast; the other call sites keep the normal rules."""
++    import graph.supervisor
++    import graph.workers
++    import router
++
++    original = router.route
++
++    def route(call_site, features):
++        if call_site == "supervisor":
++            return router._decision(call_site, "strong", "capability", "senior planner: supervisor on the strong tier")
++        if call_site == "research":
++            return router._decision(call_site, "fast", "capability", "fast executor: research on the fast tier")
++        return original(call_site, features)
++
++    graph.supervisor.route = graph.workers.route = route
++
++
+ def force_provider(provider: str) -> None:
+     """Send every model call to one provider's tier, whatever the router decides."""
+     import llm
+@@ -78,7 +99,7 @@ async def chunk_texts(mcp, chunk_ids: list[str]) -> list[str]:
+     return [texts[i] for i in chunk_ids if i in texts]
+ 
+ 
+-async def answer(label: str, ids: list[str] | None, provider: str | None) -> Path:
++async def answer(label: str, ids: list[str] | None, provider: str | None, routing: str | None = None) -> Path:
+     sys.path.insert(0, str(ROOT))
+     from langchain_core.messages import HumanMessage
+ 
+@@ -88,6 +109,10 @@ async def answer(label: str, ids: list[str] | None, provider: str | None) -> Pat
+     from streaming import graph_frames
+ 
+     install_log_redaction()
++    if routing == "escalate":
++        os.environ["SUPERVISOR_ESCALATION"] = "1"
++    elif routing == "senior":
++        senior_routing()
+     if provider:
+         force_provider(provider)
+     mcp = MCPTools(load_manifests())
+@@ -112,6 +137,7 @@ async def answer(label: str, ids: list[str] | None, provider: str | None) -> Pat
+                     "retrieved_ids": retrieved, "contexts": await chunk_texts(mcp, retrieved) if retrieved else [],
+                     "routing": [d for n, d in events if n == "routing"],
+                     "dispatches": [d.worker for d in final.get("dispatches", [])],
++                    "decisions": [d["decision"] for n, d in events if n == "trace" and d.get("decision")],
+                     "tools": [d["detail"].split("(")[0] for n, d in events if n == "trace" and d["kind"] == "tool_call"],
+                     "citations": next((d for n, d in events if n == "citations"), {}),
+                     "errors": [e.kind for e in final.get("errors", [])],
+@@ -232,12 +258,13 @@ def main() -> None:
+     run.add_argument("label")
+     run.add_argument("--ids", nargs="+", help="only these question IDs")
+     run.add_argument("--provider", choices=sorted(PROVIDER_TIERS), help="send every model call to this provider")
++    run.add_argument("--routing", choices=["escalate", "senior"], help="supervisor routing variant to measure")
+     judged = steps.add_parser("score", help="judge saved answers with RAGAS (eval venv)")
+     judged.add_argument("label")
+     args = parser.parse_args()
+     os.environ.setdefault("STATE_BACKEND", "memory")
+     if args.step == "answer":
+-        print(asyncio.run(answer(args.label, args.ids, args.provider)))
++        print(asyncio.run(answer(args.label, args.ids, args.provider, args.routing)))
+     else:
+         asyncio.run(score(args.label))
+ 
+diff --git a/graph/supervisor.py b/graph/supervisor.py
+index 424cecb..3f7d0d5 100644
+--- a/graph/supervisor.py
++++ b/graph/supervisor.py
+@@ -24,7 +24,7 @@ from langchain_core.runnables import Runnable
+ 
+ from agents.registry import AGENTS, PROMPTS_DIR
+ from config import max_supervisor_steps, max_worker_retries, supervisor_timeout_s
+-from graph.history import format_earlier_turns
++from graph.history import earlier_turns, format_earlier_turns
+ from graph.state import AgentError, Dispatch, Finding, OrchestratorState, RoutingDecision, SupervisorDecision
+ from graph.trace import emit_routing, emit_trace
+ from llm import FALLBACK, Models, Tier, resolve_models
+@@ -162,7 +162,11 @@ def make_supervisor(
+             emit_trace("supervisor", "exit", step=step, detail="next=synthesize", ms=round((time.perf_counter() - start) * 1000))
+             return {"step": step, "next": "synthesize", "instruction": "", "task_type": task_type}
+ 
+-        routing = [route("supervisor", RouteFeatures(task_type=state.get("task_type") or "general"))]
++        findings = state.get("findings", [])
++        routing = [route("supervisor", RouteFeatures(
++            task_type=state.get("task_type") or "general", n_findings=len(findings),
++            worker_failures=sum(failures.values()), ungrounded_findings=sum(not f.grounded for f in findings),
++            follow_up=not state.get("dispatches") and bool(earlier_turns(state))))]  # resolving references
+         emit_routing(routing[0], step=step)
+ 
+         def switched(fallback: RoutingDecision) -> None:
+diff --git a/router.py b/router.py
+index 196f8a3..39640f5 100644
+--- a/router.py
++++ b/router.py
+@@ -5,6 +5,8 @@ in scope, findings, context size), so every decision can be logged, streamed and
+ 
+   call site   default  escalate (or downgrade) when                                         dimension
+   supervisor  fast     never: classification is cheap                                        cost
++              (with SUPERVISOR_ESCALATION on: a worker failed or came back ungrounded, the
++              turn is a follow-up, or multi-paper findings must be combined)              hybrid
+   data        fast     a run_sql call in this run errored                                    hybrid
+   research    fast     task_type is compare or lit_review                                    capability
+   summary     strong   downgrade to fast when exactly one paper is in scope                  capability
+@@ -24,7 +26,7 @@ from typing import Literal, TypeVar
+ 
+ from langchain_core.messages import AnyMessage, ToolMessage
+ 
+-from config import strong_context_tokens
++from config import strong_context_tokens, supervisor_escalation
+ from graph.guard import is_provider_error
+ from graph.state import Finding, RoutingDecision
+ from llm import FALLBACK, PROVIDERS, Tier, model_id
+@@ -50,6 +52,9 @@ class RouteFeatures:
+     n_findings: int = 0
+     n_cited_papers: int = 0
+     context_tokens: int = 0
++    worker_failures: int = 0
++    ungrounded_findings: int = 0
++    follow_up: bool = False
+ 
+ 
+ def sql_errored(messages: Iterable[AnyMessage]) -> bool:
+@@ -80,7 +85,16 @@ def route(call_site: CallSite, features: RouteFeatures) -> RoutingDecision:
+     """Pick the tier for one LLM call from inspectable features; the reason names the deciding values."""
+     f = features
+     if call_site == "supervisor":
+-        return _decision(call_site, "fast", "cost", "routing decisions are a cheap classification: fast tier")
++        if not supervisor_escalation():
++            return _decision(call_site, "fast", "cost", "routing decisions are a cheap classification: fast tier")
++        reasons = [r for r, hit in [(f"{f.worker_failures} worker failure(s) to re-plan around", f.worker_failures > 0),
++                                    (f"{f.ungrounded_findings} ungrounded finding(s)", f.ungrounded_findings > 0),
++                                    ("follow-up turn that refers to earlier answers", f.follow_up),
++                                    (f"combining {f.n_findings} finding(s) for task_type={f.task_type}",
++                                     f.n_findings > 0 and f.task_type in MULTI_PAPER_TASKS)] if hit]
++        if reasons:
++            return _decision(call_site, "strong", "hybrid", f"{', '.join(reasons)}: strong tier")
++        return _decision(call_site, "fast", "hybrid", "a first or straightforward routing decision: fast tier")
+     if call_site == "data":
+         if f.sql_errored:
+             return _decision(call_site, "strong", "hybrid", "a run_sql call errored this run: strong tier to fix the query")
+diff --git a/tests/test_router.py b/tests/test_router.py
+index 25b45ef..3bc68a8 100644
+--- a/tests/test_router.py
++++ b/tests/test_router.py
+@@ -41,6 +41,33 @@ def test_supervisor_is_always_fast():
+     assert (d.tier, d.provider, d.dimension, d.fallback) == ("fast", "google", "cost", False)
+ 
+ 
++def test_supervisor_escalation_is_off_by_default(monkeypatch):
++    monkeypatch.delenv("SUPERVISOR_ESCALATION", raising=False)
++    assert route("supervisor", RouteFeatures(worker_failures=2, follow_up=True)).tier == "fast"
++
++
++@pytest.mark.parametrize("features", [
++    RouteFeatures(worker_failures=1),
++    RouteFeatures(ungrounded_findings=1),
++    RouteFeatures(follow_up=True),
++    RouteFeatures(task_type="compare", n_findings=1),
++])
++def test_supervisor_escalates_for_hard_decisions_when_enabled(monkeypatch, features):
++    monkeypatch.setenv("SUPERVISOR_ESCALATION", "1")
++    d = route("supervisor", features)
++    assert (d.tier, d.provider, d.dimension) == ("strong", "anthropic", "hybrid")
++
++
++@pytest.mark.parametrize("features", [
++    RouteFeatures(),
++    RouteFeatures(task_type="compare"),  # first decision: nothing to combine yet
++    RouteFeatures(task_type="lookup", n_findings=1),
++])
++def test_supervisor_stays_fast_for_easy_decisions_when_enabled(monkeypatch, features):
++    monkeypatch.setenv("SUPERVISOR_ESCALATION", "1")
++    assert route("supervisor", features).tier == "fast"
++
++
+ def test_data_escalates_after_a_sql_error():
+     assert tiers("data", [{}, {"sql_errored": True}]) == ["fast", "strong"]
+     assert route("data", RouteFeatures(sql_errored=True)).dimension == "hybrid"

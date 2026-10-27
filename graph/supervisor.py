@@ -24,7 +24,7 @@ from langchain_core.runnables import Runnable
 
 from agents.registry import AGENTS, PROMPTS_DIR
 from config import max_supervisor_steps, max_worker_retries, supervisor_timeout_s
-from graph.history import earlier_turns, format_earlier_turns
+from graph.history import format_earlier_turns
 from graph.state import AgentError, Dispatch, Finding, OrchestratorState, RoutingDecision, SupervisorDecision
 from graph.trace import emit_routing, emit_trace
 from llm import FALLBACK, Models, Tier, resolve_models
@@ -162,11 +162,7 @@ def make_supervisor(
             emit_trace("supervisor", "exit", step=step, detail="next=synthesize", ms=round((time.perf_counter() - start) * 1000))
             return {"step": step, "next": "synthesize", "instruction": "", "task_type": task_type}
 
-        findings = state.get("findings", [])
-        routing = [route("supervisor", RouteFeatures(
-            task_type=state.get("task_type") or "general", n_findings=len(findings),
-            worker_failures=sum(failures.values()), ungrounded_findings=sum(not f.grounded for f in findings),
-            follow_up=not state.get("dispatches") and bool(earlier_turns(state))))]  # resolving references
+        routing = [route("supervisor", RouteFeatures(task_type=state.get("task_type") or "general"))]
         emit_routing(routing[0], step=step)
 
         def switched(fallback: RoutingDecision) -> None:

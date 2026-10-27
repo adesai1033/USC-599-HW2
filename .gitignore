@@ -72,3 +72,4 @@ node_modules/
 eval/results/*.jsonl
 !eval/results/*.scores.jsonl
 !eval/results/latency-*.jsonl
+eval/archive/*/answers/
