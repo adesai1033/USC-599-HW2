@@ -3,10 +3,11 @@
 # Usage: set -a; source .env; set +a; ./deploy.sh
 set -euo pipefail
 
-PROJECT_ID="usc-599-hw2"
-REGION="us-west1"
+# GCP_PROJECT_ID and GCP_REGION (from .env) select the target project; the defaults are ours.
+PROJECT_ID="${GCP_PROJECT_ID:-usc-599-hw2}"
+REGION="${GCP_REGION:-us-west1}"
 SERVICE="paper-assistant"
-IMAGE="us-west1-docker.pkg.dev/${PROJECT_ID}/images/paper-assistant"
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/images/paper-assistant"
 SERVICE_ACCOUNT="paper-assistant-run@${PROJECT_ID}.iam.gserviceaccount.com"
 
 # Keys come only from the shell (e.g. `set -a; source .env; set +a`), never from literals here.

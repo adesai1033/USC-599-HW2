@@ -14,6 +14,18 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-26: `deploy.sh` takes the project and region from `.env`
+
+- **Why:** `deploy.sh` hard-coded `usc-599-hw2`, so a TA deploying to a fresh project had to edit it.
+  The image path, service account, `--project` flags and `FIRESTORE_PROJECT_ID` all derive from it.
+- **Change:** `PROJECT_ID="${GCP_PROJECT_ID:-usc-599-hw2}"`, `REGION="${GCP_REGION:-us-west1}"`, and
+  the Artifact Registry host now follows `REGION`. Both variables were already in `.env.example`.
+  The README's deploy and fresh-project sections now say to set them in `.env` instead of editing
+  the script.
+- **Check:** `bash -n deploy.sh` passes. With nothing set, the derived values are unchanged
+  (`us-west1-docker.pkg.dev/usc-599-hw2/...`). With `GCP_PROJECT_ID=ta-proj GCP_REGION=us-east1`,
+  they become `us-east1-docker.pkg.dev/ta-proj/...` and `paper-assistant-run@ta-proj...`. Not deployed.
+
 ### 2026-10-26: Criteria audit against `Assignment_2_Description.pdf`
 
 - Checked every requirement in §2–§5 and the §7 rubric against the code, the docs and the live URL.

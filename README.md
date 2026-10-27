@@ -145,11 +145,13 @@ set -a; source .env; set +a
 ```
 
 **What `deploy.sh` does:**
+- **Project:** `GCP_PROJECT_ID` and `GCP_REGION` from `.env` select the project and region; unset,
+  they default to ours (`usc-599-hw2`, `us-west1`).
 - **Build:** builds the image with Cloud Build and pushes it to Artifact Registry
-  (`us-west1-docker.pkg.dev/usc-599-hw2/images/paper-assistant`).
+  (`${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/images/paper-assistant`).
 - **Deploy:** deploys the Cloud Run service `paper-assistant` with `--memory 2Gi --cpu 1
   --concurrency 10 --timeout 300 --min-instances 0 --max-instances 3`.
-- **Identity:** the service runs as `paper-assistant-run@usc-599-hw2.iam.gserviceaccount.com`.
+- **Identity:** the service runs as `paper-assistant-run@${GCP_PROJECT_ID}.iam.gserviceaccount.com`.
 - **Settings:** it passes every key and model ID with `--set-env-vars` from shell variables, never
   literals, plus `STATE_BACKEND=firestore`.
 
@@ -157,11 +159,12 @@ Traffic follows the latest revision.
 
 ### Fresh GCP project setup
 
-To deploy into a new project, first set `PROJECT_ID` (and `REGION`, which also appears in `IMAGE`)
-at the top of `deploy.sh`. Then, once per project:
+To deploy into a new project, set `GCP_PROJECT_ID` (and `GCP_REGION` if not `us-west1`) in `.env`;
+`deploy.sh` needs no edits. Then, once per project:
 
 ```bash
-PROJECT_ID=your-project-id; REGION=us-west1
+set -a; source .env; set +a
+PROJECT_ID="$GCP_PROJECT_ID"; REGION="$GCP_REGION"
 gcloud config set project "$PROJECT_ID"
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
   artifactregistry.googleapis.com firestore.googleapis.com
