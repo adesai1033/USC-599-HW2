@@ -75,6 +75,12 @@ def strong_context_tokens() -> int:
     return _env_number("STRONG_CONTEXT_TOKENS", 8000, 1)
 
 
+def supervisor_escalation() -> bool:
+    """SUPERVISOR_ESCALATION (default off): let the supervisor move to the strong tier for hard decisions
+    (re-planning after a failed or ungrounded worker, a follow-up turn, combining multi-paper findings)."""
+    return os.environ.get("SUPERVISOR_ESCALATION", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def mcp_reconnect_backoff_s() -> float:
     """MCP_RECONNECT_BACKOFF_S (default 30): wait after a failed reconnect before trying a server again."""
     return _env_number("MCP_RECONNECT_BACKOFF_S", 30, 0, float)

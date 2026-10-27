@@ -109,7 +109,7 @@ streamed as a `routing` event, stored in `routing`, and unit-tested.
 
 | Call site | Default | Escalate (or downgrade) when | Dimension |
 |---|---|---|---|
-| `supervisor` | fast | never: classification is cheap | cost |
+| `supervisor` | fast | never: classification is cheap. With `SUPERVISOR_ESCALATION` on (off by default): a worker failed or came back ungrounded, the first decision of a follow-up turn, or combining compare / lit-review findings; measured in `docs/evaluation.md` and left off | cost (hybrid when on) |
 | `data` | fast | a `run_sql` call in this run errored | hybrid |
 | `research` | fast | `task_type ∈ {compare, lit_review}` | capability |
 | `summary` | strong | downgrade to fast when exactly one paper is in scope | capability |

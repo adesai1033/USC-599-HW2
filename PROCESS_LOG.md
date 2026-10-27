@@ -14,6 +14,19 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-26: Supervisor escalation, measured and left off
+
+- **Question:** should the supervisor run on Claude, since every turn passes through it?
+- **Change:** `SUPERVISOR_ESCALATION` (`config.py`, off by default). When on, `router.route("supervisor")`
+  picks Claude for re-planning after a failed or ungrounded worker, the first decision of a follow-up
+  turn, and combining compare / lit-review findings; `graph/supervisor.py` passes those features.
+  `eval/run_ragas.py answer --routing escalate|senior` runs the variants, and records each supervisor
+  decision. 8 new router tests; `pytest tests/` 196 passed, 2 skipped.
+- **Measured:** 29 questions × 3 arms (control, escalation, supervisor-always-Claude with
+  research-always-Gemini), RAGAS on 25. All arms routed 29/29 correctly with 0 errors; RAGAS moved
+  within noise; escalation cost +11% and +2 s TTFT, the senior split +16% and +2.5 s. Details in
+  `docs/evaluation.md`. Kept off.
+
 ### 2026-10-26: `deploy.sh` takes the project and region from `.env`
 
 - **Why:** `deploy.sh` hard-coded `usc-599-hw2`, so a TA deploying to a fresh project had to edit it.
