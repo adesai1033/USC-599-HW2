@@ -14,6 +14,21 @@
 
 Dated record of each code change, newest first.
 
+### 2026-10-26: Criteria audit against `Assignment_2_Description.pdf`
+
+- Checked every requirement in §2–§5 and the §7 rubric against the code, the docs and the live URL.
+  `pytest tests/`: 188 passed, 2 skipped. On the live URL, a cold `/health` returned 200 after 31 s.
+  - A 3DGS lookup went research → `search_corpus` on Gemini, with 3DGS chunk citations.
+  - A "this month" question went research → `tavily_search` and cited only web sources.
+  - The NeRF/Instant-NGP/3DGS comparison went to summary and synthesize on Claude (strong tier),
+    with 13 valid citations from 3 papers.
+  - `/sessions/{id}/turns` returned the stored turn.
+- **Fix:** `docs/architecture.md` said `rag/format.py` renders chunks as
+  `[chunk_id] (title, §section, p.N)`. That file is only a docstring: chunks reach the model as the
+  JSON records `search_corpus` returns. The doc now describes what the code does.
+- **Open:** the four graded sections above are still empty headings. `rag/format.py` is an unused
+  stub.
+
 ### 2026-10-26: `docs/orchestration_flow.md`
 
 - New page of Mermaid diagrams: the end-to-end flow (browser, supervisor loop, workers, MCP servers,

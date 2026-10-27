@@ -164,8 +164,10 @@ In the forced-OpenAI run, every multi-paper question also hit the worker timeout
   - **Re-ranking:** about 40 candidates are re-ranked by cosine similarity + 0.02 ×
     log10(1 + citations), so the paper that introduced a method can outrank follow-ups that restate
     it. The reported `score` stays the plain cosine similarity.
-- **Augmentation** (`rag/format.py`): each chunk is rendered as `[chunk_id] (title, §section, p.N)`
-  followed by its text. The worker prompts require a `[chunk_id]` on every corpus-derived claim.
+- **Augmentation** (`mcp_servers/corpus.py`): `search_corpus` and `get_chunks` return the chunks as
+  compact JSON records (`chunk_id`, `arxiv_id`, `title`, `section`, `page`, `url`, `score`, `text`),
+  which enter the worker's prompt as tool messages. The worker prompts require a `[chunk_id]` on
+  every corpus-derived claim.
 - **Citations** (`rag/citations.py`): three formats.
 
   | Format | Example | Meaning |
